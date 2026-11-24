@@ -347,3 +347,41 @@ table.semana .corto { display: none; }
   .barra h1 { white-space: normal; font-size: 16px; }
   .barra h1 small { display: none; }
 }
+
+/* Reporte del estudio y comentario (versión 1.1) */
+.marcar-caja { display: flex; flex-direction: column; gap: 6px; min-width: 150px; max-width: 190px; }
+.btn-rep { min-height: 32px; font-size: 13px; white-space: nowrap; }
+.btn-rep.sin { color: var(--tinta-2); border-style: dashed; }
+.btn-rep.con { background: var(--ok-suave); color: var(--ok); border-color: #9fcdb2; }
+.btn-rep.revisar { background: var(--alerta-suave); color: #8a5200; border-color: #e3bd72; }
+.acciones-rep { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.linea-rep { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; margin-bottom: 10px; font-size: 13.5px; }
+.ficha .tenue, .panel .tenue, .modal .tenue { color: var(--tinta-2); }
+.archivo.reporte .lienzo { min-height: 260px; }
+.archivo.reporte .lienzo iframe { height: min(78vh, 980px); }
+.archivo.reporte .lienzo img { max-height: none; }
+.vista-censo .archivo.reporte .lienzo iframe { height: min(52vh, 640px); }
+.item-censo { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; padding: 10px 8px; border-bottom: 1px solid var(--linea); }
+.item-censo.actual { background: var(--azul-suave); border-radius: 8px; }
+.item-censo .crece { flex: 1 1 280px; min-width: 0; }
+.item-censo .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.lista-censo { background: #fff; border: 1px solid var(--linea); border-radius: 10px; padding: 4px 10px 10px; }
+.comentario textarea { width: 100%; min-height: 110px; resize: vertical; line-height: 1.45; }
+.comentario .barra-com { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; margin-top: 8px; }
+.comentario .barra-com > .tenue { font-size: 13px; }
+.comentario .sin-guardar { color: #8a5200; font-weight: 600; }
+.comentario select { width: auto; max-width: 240px; }
+.tenue.recorte { display: block; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aviso-enlace { display: block; text-decoration: none; }
+.aviso-enlace:hover { filter: brightness(.98); text-decoration: underline; }
+@media (max-width: 800px) {
+  /* Las tarjetas nunca más anchas que la pantalla (fechas y citas largas pasan a otra línea) */
+  table.censo tr { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  table.censo td { min-width: 0; overflow-wrap: break-word; }
+  table.censo td.nowrap { white-space: normal; }
+  .marcar-caja { max-width: none; min-width: 0; flex-direction: row; }
+  .marcar-caja select.marcar { flex: 1 1 0; width: 0; min-width: 0; }
+  .btn-rep { min-height: 42px; }
+  .comentario select { max-width: none; flex: 1 1 100%; }
+}
+@media print { .marcar-caja { display: block; } }

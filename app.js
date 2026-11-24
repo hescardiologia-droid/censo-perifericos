@@ -41,7 +41,7 @@
   const S = {
     token: '', usuario: null, medicos: [], motivos: [], config: null, hoy: '', filas: new Map(), repetidas: new Set(),
     desde: '', sincronizado: '', cargando: false, errorCarga: '', ui: {}, archivos: new Map(), cupos: null, stats: null, usuarios: null,
-    panel: null, detalleAbierto: null
+    panel: null, detalleAbierto: null, plantillas: [], estudiosConReporte: [], estadoReportes: null
   };
 
   /* ============================== utilidades ============================== */
@@ -146,7 +146,19 @@
   function abrirModal(contenido, opciones) {
     const o = opciones || {};
     const velo = h('div', { class: 'velo', role: 'dialog', 'aria-modal': 'true' });
-    const cerrar = function () { velo.remove(); document.removeEventListener('keydown', tecla); if (!modalesAbiertos()) document.body.style.overflow = ''; if (o.alCerrar) o.alCerrar(); };
+    let cerrado = false, preguntando = false;
+    const cerrarYa = function () {
+      if (cerrado) return;
+      cerrado = true;
+      velo.remove(); document.removeEventListener('keydown', tecla); if (!modalesAbiertos()) document.body.style.overflow = ''; if (o.alCerrar) o.alCerrar();
+    };
+    // o.antesDeCerrar() puede devolver false (o una promesa) para que el modal siga abierto, p. ej. con un comentario sin guardar.
+    const cerrar = function () {
+      if (!o.antesDeCerrar) { cerrarYa(); return; }
+      if (preguntando || cerrado) return;
+      preguntando = true;
+      Promise.resolve(o.antesDeCerrar()).then(function (ok) { preguntando = false; if (ok) cerrarYa(); });
+    };
     const tecla = function (ev) { if (ev.key === 'Escape' && $capas.lastChild === velo && !document.querySelector('.visor')) cerrar(); };
     velo.addEventListener('mousedown', function (ev) { if (ev.target === velo) cerrar(); });
     document.addEventListener('keydown', tecla);
@@ -196,7 +208,8 @@
     S.filas = new Map();
     S.archivos.forEach(function (a) { URL.revokeObjectURL(a.url); });
     S.archivos = new Map();
-    S.cupos = S.stats = S.usuarios = S.panel = null;
+    S.cupos = S.stats = S.usuarios = S.panel = S.estadoReportes = null;
+    S.plantillas = [];
     S.sincronizado = '';
     S.desde = '';
     guardarToken('');
@@ -312,6 +325,8 @@
     S.motivos = r.motivos_no;
     S.config = r.config;
     S.hoy = r.fecha;
+    S.plantillas = r.plantillas || [];
+    S.estudiosConReporte = r.estudios_con_reporte || [];
     return r;
   }
   /** Trae del servidor los últimos días y todos los pendientes. Lo más antiguo ya cargado se conserva. */
@@ -413,7 +428,7 @@
     return h('header', { class: 'barra' }, h('div', { class: 'barra-int' },
       conVolver ? h('a', { class: 'btn-barra', href: '#/' }, '‹ Inicio') : h('img', { class: 'logo', src: 'icons/icon-192.png', alt: '' }),
       h('h1', null, titulo, sub ? h('small', null, sub) : null),
-      h('button', { class: 'btn-barra no-imprimir', title: 'Actualizar datos', onclick: function () { S.cupos = S.stats = S.usuarios = null; sincronizar(); } }, '↻', h('span', { class: 'txt' }, S.cargando ? ' Actualizando…' : ' Actualizar')),
+      h('button', { class: 'btn-barra no-imprimir', title: 'Actualizar datos', onclick: function () { S.cupos = S.stats = S.usuarios = S.estadoReportes = null; sincronizar(); } }, '↻', h('span', { class: 'txt' }, S.cargando ? ' Actualizando…' : ' Actualizar')),
       h('button', { class: 'btn-barra no-imprimir', onclick: menuCuenta, 'aria-label': 'Mi cuenta' }, S.usuario ? S.usuario.usuario : '')));
   }
   function ruta() { return location.hash.replace(/^#\/?/, '').split('/'); }
@@ -460,6 +475,7 @@
     const atendidas = deHoy.filter(function (f) { return f.estado !== 'PENDIENTE'; }).length;
     const recibidasHoy = todas.filter(function (f) { return f.fecha === S.hoy; }).length;
     const urg = pend.filter(function (f) { return f.prioridad === 'Urgencia'; }).length;
+    const porRevisar = todas.filter(function (f) { return f.reporte_estado === 'POR REVISAR'; }).length;
     const sinDatos = !S.sincronizado;
     const tarjeta = function (href, clase, nombre, cifra, cifraNota, nota) {
       return h('a', { class: 'modulo ' + clase, href: href }, h('div', { class: 'nombre' }, nombre),
@@ -469,6 +485,11 @@
     agregar(main, [
       h('div', { class: 'saludo' }, h('h2', null, 'Hola, ' + S.usuario.nombre),
         h('span', null, S.sincronizado ? plural(recibidasHoy, 'solicitud recibida', 'solicitudes recibidas') + ' hoy · actualizado a las ' + S.sincronizado : 'Cargando solicitudes…')),
+      porRevisar ? h('a', { class: 'aviso alerta aviso-enlace', href: '#/censo', onclick: function () {
+        const u = uiCenso();
+        Object.assign(u, { reporte: 'revisar', q: '', estudio: '', hosp: '', estado: '', prio: '', desde: S.desde || u.desde, hasta: S.hoy });
+      } }, h('b', null, plural(porRevisar, 'reporte de ecocardiograma por revisar', 'reportes de ecocardiograma por revisar') + '.'),
+        ' Se encontraron reportes que podrían corresponder a estas solicitudes, pero no coinciden todos los datos. Toque aquí para revisarlos.') : null,
       h('div', { class: 'modulos' },
         tarjeta('#/citas', 'principal', 'Asignación de citas', sinCita.length, sinCita.length === 1 ? 'por agendar' : 'por agendar',
           plural(conCita.length, 'solicitud agendada', 'solicitudes agendadas') + ' en espera'),
@@ -480,7 +501,7 @@
         tarjeta('#/censo', 'util', 'Censo', null, '', 'Todas las solicitudes, con filtros y descarga'),
         tarjeta('#/estadisticas', 'util', 'Estadísticas', null, '', 'Por estudio, médico, edad, sexo, hospital, especialidad y prioridad'),
         tarjeta('#/cupos', 'util', 'Control de cupos', null, '', 'Cupos por día y estudio, fechas sin cupos y formulario'),
-        esAdmin() ? tarjeta('#/admin', 'util', 'Usuarios y médicos', null, '', 'Cuentas de acceso y lista de médicos') : null)
+        esAdmin() ? tarjeta('#/admin', 'util', 'Usuarios y médicos', null, '', 'Cuentas de acceso, médicos, plantillas de comentario y censo de reportes') : null)
     ]);
   }
 
@@ -604,7 +625,7 @@
 
   const COLS = {
     cita: { t: 'Cita', clase: 'c-cita', celda: celdaCita },
-    marcar: { t: 'Realizado por', clase: 'c-marcar', celda: selectorMarcado },
+    marcar: { t: 'Realizado por · reporte', clase: 'c-marcar', celda: celdaMarcar },
     solicitud: { t: 'Solicitud', orden: 'fecha', clase: 'nowrap', e: 'Solicitud', celda: function (f) {
       return [fechaHora(f.fecha_hora), f.estado === 'PENDIENTE' ? h('div', { class: 'tenue' }, textoEspera(f)) : null];
     } },
@@ -997,9 +1018,11 @@
 
   /* ============================== detalle ============================== */
   async function obtenerArchivo(id, cual, n) {
-    const llave = id + '|' + cual + '|' + (n || 0);
+    return descargarArchivo(id + '|' + cual + '|' + (n || 0), function () { return api('archivo', { id: id, cual: cual, n: n || 0 }); });
+  }
+  async function descargarArchivo(llave, pedir) {
     if (S.archivos.has(llave)) return S.archivos.get(llave);
-    const d = await api('archivo', { id: id, cual: cual, n: n || 0 });
+    const d = await pedir();
     const bin = atob(d.b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -1051,10 +1074,286 @@
         } }, 'Archivo ' + (i + 1));
       })));
   }
+  /* ============================== reporte del estudio ============================== */
+  const MAX_REPORTE = 8 * 1024 * 1024;
+  const TEXTO_REPORTE = { 'AUTOMÁTICO': 'Vinculado automáticamente', 'CONFIRMADO': 'Reporte confirmado', 'CARGADO': 'Cargado a mano', 'POR REVISAR': 'Por revisar' };
+  function conCensoReportes(f) { return S.estudiosConReporte.indexOf(f.estudio) >= 0; }
+  /** Quita de la memoria el archivo descargado (el reporte cambió). */
+  function olvidarArchivo(llave) {
+    Array.from(S.archivos.keys()).forEach(function (k) {
+      if (k.indexOf(llave) === 0) { URL.revokeObjectURL(S.archivos.get(k).url); S.archivos.delete(k); }
+    });
+  }
+  function chipReporte(f) {
+    if (!f.reporte) return null;
+    return h('span', { class: 'chip ' + (f.reporte_estado === 'POR REVISAR' ? 'alerta' : 'ok') }, TEXTO_REPORTE[f.reporte_estado] || 'Con reporte');
+  }
+  /** Botón junto a "Realizado por": subir el reporte, verlo o revisarlo. */
+  function botonReporte(f) {
+    if (f.reporte) {
+      const revisar = f.reporte_estado === 'POR REVISAR';
+      return h('button', { type: 'button', class: 'btn chico btn-rep no-imprimir ' + (revisar ? 'revisar' : 'con'),
+        title: revisar ? 'Se encontró un reporte que podría ser de este paciente. Revíselo y confírmelo.' : TEXTO_REPORTE[f.reporte_estado] || 'Ver el reporte',
+        onclick: function (ev) { ev.stopPropagation(); abrirDetalle(S.filas.get(f.id) || f, { ir: 'reporte' }); } }, revisar ? 'Revisar reporte' : 'Ver reporte ✓');
+    }
+    if (f.estado === 'NO REALIZADO') return null;
+    return h('button', { type: 'button', class: 'btn chico btn-rep sin no-imprimir',
+      title: 'Subir una foto o un PDF del reporte' + (conCensoReportes(f) ? '. El reporte del ecógrafo también se busca solo cada hora.' : ''),
+      onclick: function (ev) { ev.stopPropagation(); elegirArchivoReporte(f, ev.currentTarget); } }, '+ Subir reporte');
+  }
+  function celdaMarcar(f) { return h('div', { class: 'marcar-caja' }, selectorMarcado(f), botonReporte(f)); }
+
+  function elegirArchivoReporte(f, btn) {
+    const input = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', style: 'display:none' });
+    input.addEventListener('change', function () {
+      const archivo = input.files && input.files[0];
+      input.remove();
+      if (archivo) subirReporte(f, archivo, btn);
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+  /** PDF tal cual; las fotos se reducen (máx. 2400 px, JPG) para que suban rápido con mala conexión. */
+  async function prepararReporte(archivo) {
+    const ext = (String(archivo.name || '').split('.').pop() || '').toLowerCase();
+    if (archivo.type === 'application/pdf' || ext === 'pdf') {
+      if (archivo.size > MAX_REPORTE) throw new Error('El PDF pesa más de 8 MB.');
+      return archivo;
+    }
+    if (!/^image\//.test(archivo.type) && ['jpg', 'jpeg', 'png'].indexOf(ext) < 0) throw new Error('Use una foto (JPG o PNG) o un PDF.');
+    const url = URL.createObjectURL(archivo);
+    try {
+      const img = await new Promise(function (ok, mal) {
+        const i = new Image();
+        i.onload = function () { ok(i); };
+        i.onerror = function () { mal(new Error('No se pudo abrir la imagen. Pruebe con otra foto o con un PDF.')); };
+        i.src = url;
+      });
+      const escala = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight));
+      if (/^image\/(jpeg|png)$/.test(archivo.type) && escala === 1 && archivo.size <= 900 * 1024) return archivo;
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * escala);
+      c.height = Math.round(img.naturalHeight * escala);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff';
+      g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      const b = await new Promise(function (ok) { c.toBlob(ok, 'image/jpeg', 0.88); });
+      if (!b) throw new Error('No se pudo preparar la imagen.');
+      if (b.size > MAX_REPORTE) throw new Error('La imagen pesa más de 8 MB.');
+      return b;
+    } finally { URL.revokeObjectURL(url); }
+  }
+  function aBase64(blob) {
+    return new Promise(function (ok, mal) {
+      const r = new FileReader();
+      r.onload = function () { ok(String(r.result).split(',')[1] || ''); };
+      r.onerror = function () { mal(new Error('No se pudo leer el archivo.')); };
+      r.readAsDataURL(blob);
+    });
+  }
+  async function subirReporte(f, archivo, btn) {
+    if (f.reporte && !(await preguntar('¿Reemplazar el reporte?', 'Esta solicitud ya tiene un reporte. El archivo nuevo lo reemplazará.', 'Sí, reemplazar', 'Cancelar'))) return;
+    const trabajo = async function () {
+      const blob = await prepararReporte(archivo);
+      const r = await api('reporte.subir', { id: f.id, archivo: { b64: await aBase64(blob) } });
+      olvidarArchivo(f.id + '|reporte|');
+      return aplicarFila(r);
+    };
+    try {
+      const x = btn && btn.isConnected ? await conBoton(btn, trabajo) : await trabajo();
+      tostada('Reporte cargado · ' + x.nombre);
+    } catch (e) { tostada(e.message, { error: true }); }
+    refrescarDetalle(f.id);
+    pintar();
+  }
+  async function accionReporte(f, accion, btn, mensaje) {
+    try {
+      const r = await conBoton(btn, function () { return api(accion, { id: f.id }); });
+      if (accion !== 'reporte.confirmar') olvidarArchivo(f.id + '|reporte|');
+      aplicarFila(r);
+      tostada(mensaje);
+    } catch (e) { tostada(e.message, { error: true }); }
+    refrescarDetalle(f.id);
+    pintar();
+  }
+
+  /** Contenido de la sección "Reporte del estudio" en el detalle. */
+  function pintarReporte(caja, f) {
+    caja.textContent = '';
+    const censo = conCensoReportes(f);
+    const boton = function (texto, clase, fn) { return h('button', { type: 'button', class: 'btn chico ' + (clase || ''), onclick: function (ev) { fn(ev.currentTarget); } }, texto); };
+    const subir = boton(f.reporte ? 'Reemplazar (subir foto o PDF)' : 'Subir foto o PDF', f.reporte ? '' : 'oscuro', function (b) { elegirArchivoReporte(f, b); });
+    const buscar = censo ? boton(f.reporte ? 'Elegir otro del censo' : 'Buscar en el censo de reportes', '', function () { elegirDelCenso(f); }) : null;
+    if (!f.reporte) {
+      agregar(caja, [
+        h('p', { class: 'tenue', style: 'margin:0 0 6px' }, 'Sin reporte.' + (censo ? ' El reporte del ecógrafo se busca automáticamente cada hora (7:00 a. m. a 3:59 p. m.). También puede buscarlo en el censo o subir una foto o un PDF.' : '')),
+        f.reporte_info ? h('p', { class: 'tenue', style: 'margin:0 0 10px' }, f.reporte_info) : null,
+        h('div', { class: 'acciones-rep' }, subir, buscar)]);
+      return;
+    }
+    const revisar = f.reporte_estado === 'POR REVISAR';
+    const vistaRep = panelArchivo(f, 'reporte', 'Reporte');
+    vistaRep.classList.add('reporte');
+    agregar(caja, [
+      h('div', { class: 'linea-rep' }, chipReporte(f), f.reporte_info ? h('span', { class: 'tenue' }, f.reporte_info) : null),
+      revisar ? h('div', { class: 'aviso alerta', style: 'margin-top:0' }, h('b', null, '¿Este reporte es de ' + f.nombre + '?'),
+        ' Exp. ' + (f.expediente || 's/d') + ' · nacimiento ' + (f.fecha_nacimiento || 's/d') + '. Compare los datos del reporte antes de confirmar.') : null,
+      h('div', { class: 'acciones-rep' },
+        revisar ? boton('Sí, corresponde', 'primario', function (b) { accionReporte(f, 'reporte.confirmar', b, 'Reporte confirmado.'); }) : null,
+        revisar ? boton('No corresponde', 'peligro', function (b) { accionReporte(f, 'reporte.descartar', b, 'Se quitó el reporte propuesto; no se volverá a proponer.'); }) : null,
+        buscar, subir,
+        revisar ? null : boton('Quitar reporte', 'peligro', async function (b) {
+          if (await preguntar('¿Quitar el reporte?', 'La solicitud quedará sin reporte.' + (censo ? ' Ese archivo no se le volverá a proponer automáticamente.' : ''), 'Sí, quitar', 'Cancelar', 'peligro')) {
+            accionReporte(f, 'reporte.descartar', b, 'Reporte quitado.');
+          }
+        })),
+      h('div', { style: 'margin-top:12px' }, vistaRep)]);
+  }
+
+  /** Busca en el censo de reportes (los más parecidos al paciente primero) y permite elegir el correcto. */
+  function elegirDelCenso(f) {
+    abrirModal(function (cerrar) {
+      const lista = h('div', { class: 'lista-censo' }, h('div', { class: 'vacio' }, 'Buscando en el censo…'));
+      const vista = h('div', { class: 'vista-censo' });
+      const err = cajaError();
+      const q = h('input', { type: 'search', id: 'censo-q', placeholder: 'Nombre o ID del paciente', autocomplete: 'off', 'data-foco': true });
+      let pedido = 0;
+      const marca = function (ok, texto) { return h('span', { class: 'chip ' + (ok ? 'ok' : 'gris') }, (ok ? '✓ ' : '✕ ') + texto); };
+      const buscar = async function () {
+        const n = ++pedido;
+        err.textContent = '';
+        try {
+          const r = await api('reportes.buscar', { id: f.id, q: q.value.trim() });
+          if (n === pedido) pintarLista(r);
+        } catch (e) { if (n === pedido) { lista.textContent = ''; mostrarError(err, e); } }
+      };
+      q.addEventListener('input', function () { clearTimeout(q._t); q._t = setTimeout(buscar, 350); });
+      const ver = async function (x, btn) {
+        try {
+          const a = await conBoton(btn, function () { return descargarArchivo('censo|' + x.archivo, function () { return api('reporte.archivo', { archivo: x.archivo }); }); });
+          vista.textContent = '';
+          vista.appendChild(h('div', { class: 'archivo reporte', style: 'margin-bottom:12px' },
+            h('div', { class: 'tit' }, h('span', null, (x.paciente || x.nombre_archivo) + ' · ' + fechaHora(x.fecha_hora)),
+              h('span', { class: 'acciones-rep' }, h('a', { class: 'btn chico', href: a.url, target: '_blank', rel: 'noopener' }, 'Abrir en otra pestaña'),
+                h('button', { type: 'button', class: 'btn chico', onclick: function () { vista.textContent = ''; } }, 'Ocultar'))),
+            h('div', { class: 'lienzo' }, navigator.pdfViewerEnabled ? h('iframe', { src: a.url, title: 'Reporte del censo' }) : 'Documento PDF. Use "Abrir en otra pestaña" para verlo.')));
+          vista.scrollIntoView({ block: 'start' });
+        } catch (e) { mostrarError(err, e); }
+      };
+      const elegir = async function (x, btn) {
+        let mover = false, otra = null;
+        for (;;) {
+          try {
+            const r = await conBoton(btn, function () { return api('reporte.vincular', { id: f.id, archivo: x.archivo, mover: mover }); });
+            olvidarArchivo(f.id + '|reporte|');
+            aplicarFila(r);
+            break;
+          } catch (e) {
+            if (e.code === 'VINCULADO_A_OTRA' && !mover) {
+              const idOtra = e.datos && e.datos.solicitud;
+              otra = S.filas.get(idOtra) || null;
+              const quien = otra ? ' (' + otra.nombre + ', ' + otra.estudio + ' del ' + fechaCorta(otra.fecha) + ')' : '';
+              if (!(await preguntar('Ese reporte está en otra solicitud', 'Está vinculado a la solicitud ' + idOtra + quien + '. ¿Moverlo a esta solicitud? La otra quedará sin reporte.', 'Sí, moverlo aquí', 'Cancelar'))) return;
+              mover = true;
+              continue;
+            }
+            mostrarError(err, e);
+            return;
+          }
+        }
+        if (otra) { // la otra solicitud quedó sin reporte
+          Object.assign(otra, { reporte: '', reporte_estado: '', reporte_info: 'El reporte se movió a la solicitud ' + f.id + '.' });
+          olvidarArchivo(otra.id + '|reporte|');
+        }
+        cerrar();
+        tostada('Reporte vinculado a ' + f.nombre + '.');
+        refrescarDetalle(f.id);
+        pintar();
+      };
+      const pintarLista = function (r) {
+        lista.textContent = '';
+        if (!r.reportes.length) {
+          lista.appendChild(h('div', { class: 'vacio' }, q.value.trim() ? 'Ningún reporte del censo coincide con la búsqueda.' :
+            'Ningún reporte del censo coincide con el expediente, el nombre o la fecha de nacimiento. Busque por nombre o ID.'));
+        }
+        r.reportes.forEach(function (x) {
+          const actual = x.solicitud === f.id;
+          lista.appendChild(h('div', { class: 'item-censo' + (actual ? ' actual' : '') },
+            h('div', { class: 'crece' }, h('b', null, x.paciente || x.nombre_archivo),
+              h('div', { class: 'tenue' }, 'ID: ' + (x.id_paciente || '—') + ' · nacimiento: ' + (x.fnac || '—') + ' · estudio: ' + (fechaHora(x.fecha_hora) || '—')),
+              h('div', { class: 'chips' }, marca(x.coincide.expediente, 'Expediente'), marca(x.coincide.nombre, 'Nombre'), marca(x.coincide.fnac, 'Nacimiento'),
+                x.solicitud ? h('span', { class: 'chip ' + (actual ? 'azul' : 'alerta') }, actual ? 'Es el reporte actual' : 'En la solicitud ' + x.solicitud) : null)),
+            h('div', { class: 'acciones-rep' },
+              h('button', { type: 'button', class: 'btn chico', onclick: function (ev) { ver(x, ev.currentTarget); } }, 'Ver'),
+              actual ? null : h('button', { type: 'button', class: 'btn chico primario', onclick: function (ev) { elegir(x, ev.currentTarget); } }, 'Elegir este'))));
+        });
+        lista.appendChild(h('p', { class: 'tenue', style: 'margin:10px 0 0;font-size:13px' }, 'Reportes en el censo: ' + r.total_censo + '. Se muestran hasta 40, primero los que más coinciden y los más cercanos a la fecha de la cita.'));
+      };
+      buscar();
+      return h('div', { class: 'modal' },
+        h('div', { class: 'modal-cab' },
+          h('div', { style: 'min-width:0' }, h('h2', null, 'Elegir reporte del censo'),
+            h('div', { class: 'meta' }, h('span', null, f.nombre), h('span', null, '· Exp. ' + (f.expediente || 's/d')), h('span', null, '· Nac. ' + (f.fecha_nacimiento || 's/d')),
+              h('span', null, '· Solicitud ' + fechaCorta(f.fecha) + (f.cita_fecha ? ' · cita ' + fechaCorta(f.cita_fecha) : '')))),
+          h('button', { class: 'btn chico x', onclick: cerrar, 'aria-label': 'Cerrar' }, '✕ Cerrar')),
+        h('div', { class: 'modal-cuerpo' }, h('div', { class: 'todo' }, vista,
+          h('div', { class: 'campo' }, h('label', { for: 'censo-q' }, 'Buscar (vacío = los que coinciden con el paciente)'), q), err, lista)));
+    });
+  }
+
+  /* ============================== comentario ============================== */
+  function seccionComentario(f0) {
+    let f = f0;
+    let guardado = f.comentario || '';
+    const txt = h('textarea', { id: 'comentario-txt', rows: '5', maxlength: '5000', placeholder: 'Comentario sobre la solicitud o el estudio…', 'aria-label': 'Comentario' });
+    txt.value = guardado;
+    const info = h('span', { class: 'tenue' });
+    const pintarInfo = function () {
+      const cambios = txt.value !== guardado;
+      info.textContent = (cambios ? 'Sin guardar · ' : f.comentario_por ? 'Guardado por ' + f.comentario_por + ' · ' : '') + txt.value.length + '/5000';
+      info.classList.toggle('sin-guardar', cambios);
+    };
+    txt.addEventListener('input', pintarInfo);
+    const plantillas = S.plantillas.filter(function (p) { return !p.estudio || p.estudio === f.estudio; });
+    // Al elegir una plantilla se inserta donde está el cursor (o reemplaza el cuadro si está vacío).
+    const sel = plantillas.length ? selector([['', 'Insertar plantilla…']].concat(plantillas.map(function (p, i) { return [String(i), p.nombre]; })), '',
+      { id: 'plantilla-sel', 'aria-label': 'Insertar plantilla', onchange: function () {
+        if (sel.value === '') return;
+        const p = plantillas[Number(sel.value)];
+        sel.value = '';
+        const v = txt.value;
+        if (!v.trim()) txt.value = p.texto;
+        else {
+          const ini = typeof txt.selectionStart === 'number' ? txt.selectionStart : v.length, fin = typeof txt.selectionEnd === 'number' ? txt.selectionEnd : v.length;
+          const antes = v.slice(0, ini), despues = v.slice(fin);
+          txt.value = antes + (antes && !/\n$/.test(antes) ? '\n' : '') + p.texto + (despues && !/^\n/.test(despues) ? '\n' : '') + despues;
+        }
+        txt.focus();
+        pintarInfo();
+      } }) : null;
+    const guardar = h('button', { type: 'button', class: 'btn primario', onclick: async function (ev) {
+      try {
+        const r = await conBoton(ev.currentTarget, function () { return api('comentario.guardar', { id: f.id, texto: txt.value }); });
+        f = aplicarFila(r);
+        txt.value = guardado = f.comentario || '';
+        pintarInfo();
+        tostada(guardado ? 'Comentario guardado.' : 'Comentario borrado.');
+      } catch (e) { tostada(e.message, { error: true }); }
+    } }, 'Guardar comentario');
+    pintarInfo();
+    return {
+      sinGuardar: function () { return txt.value !== guardado; },
+      seccion: h('section', { class: 'ficha todo comentario' }, h('h3', null, 'Comentario'), txt,
+        h('div', { class: 'barra-com' }, info, h('div', { class: 'acciones-rep' }, sel ||
+          (esAdmin() ? h('span', { class: 'tenue', style: 'font-size:13px' }, 'Puede crear plantillas en "Usuarios y médicos".') : null), guardar)))
+    };
+  }
+
   function dato(et, valor) { return h('div', null, h('dt', null, et), h('dd', null, valor || '—')); }
   function refrescarDetalle(id) { if (S.detalleAbierto && S.detalleAbierto.id === id) S.detalleAbierto.fn(S.filas.get(id)); }
 
-  function abrirDetalle(f0) {
+  function abrirDetalle(f0, op) {
     let f = f0;
     const peso = Number(f.peso), talla = Number(f.talla);
     const imc = peso > 0 && talla > 0 ? (peso / Math.pow(talla / 100, 2)).toFixed(1) : '';
@@ -1074,9 +1373,14 @@
         h('dl', { class: 'datos' }, dato('Estado', chipEstado(f)), f.estado !== 'PENDIENTE' ? dato('Fecha de cierre', fechaHora(f.fecha_cierre)) : null,
           f.marcado_por ? dato('Marcado por', f.marcado_por) : null)]);
     };
+    const seccionReporte = h('section', { class: 'ficha todo', id: 'seccion-reporte' }, h('h3', null, 'Reporte del estudio'));
+    const cajaReporte = h('div');
+    seccionReporte.appendChild(cajaReporte);
+    const comentario = seccionComentario(f);
     pintarCita();
     pintarResultado();
-    S.detalleAbierto = { id: f.id, fn: function (x) { if (x) f = x; pintarCita(); pintarResultado(); } };
+    pintarReporte(cajaReporte, f);
+    S.detalleAbierto = { id: f.id, fn: function (x) { if (x) f = x; pintarCita(); pintarResultado(); pintarReporte(cajaReporte, f); } };
     const contacto = f.contacto ? [h('a', { href: 'tel:' + f.contacto }, telefono(f.contacto))] : '';
     abrirModal(function (cerrar) {
       return h('div', { class: 'modal' },
@@ -1103,18 +1407,28 @@
           h('section', { class: 'todo archivos' }, panelArchivo(f, 'ekg', 'Electrocardiograma'), panelArchivo(f, 'rx', 'Rayos X de tórax')),
           botonesOtros(f),
           h('section', { class: 'ficha todo' }, h('h3', null, 'Cita'), seccionCita),
-          h('section', { class: 'ficha todo' }, h('h3', null, 'Resultado'), resultado)));
-    }, { alCerrar: function () { S.detalleAbierto = null; } });
+          h('section', { class: 'ficha todo' }, h('h3', null, 'Resultado'), resultado),
+          seccionReporte,
+          comentario.seccion));
+    }, { alCerrar: function () { S.detalleAbierto = null; },
+      antesDeCerrar: function () {
+        return !comentario.sinGuardar() || preguntar('Comentario sin guardar', 'Escribió un comentario que todavía no se ha guardado.', 'Cerrar sin guardar', 'Seguir editando', 'peligro');
+      } });
+    if (op && op.ir === 'reporte') seccionReporte.scrollIntoView({ block: 'start' });
   }
 
   /* ============================== censo general ============================== */
+  function uiCenso() {
+    return ui('censo', { orden: 'fecha', dir: -1, estudio: '', hosp: '', estado: '', prio: '', reporte: '', desde: sumarDias(S.hoy || new Date().toISOString().slice(0, 10), -30), hasta: S.hoy || '' });
+  }
   function vistaCenso(main) {
-    const u = ui('censo', { orden: 'fecha', dir: -1, estudio: '', hosp: '', estado: '', prio: '', desde: sumarDias(S.hoy || new Date().toISOString().slice(0, 10), -30), hasta: S.hoy || '' });
+    const u = uiCenso();
     const ordenes = ['fecha', 'prioridad', 'cita', 'nombre', 'edad', 'hospital', 'estudio'];
     const enRango = filasArr().filter(function (f) { return (!u.desde || f.fecha >= u.desde) && (!u.hasta || f.fecha <= u.hasta); });
     const filas = enRango.filter(function (f) {
       return (!u.estudio || f.estudio === u.estudio) && (!u.hosp || f.hospital === u.hosp) && (!u.prio || f.prioridad === u.prio) &&
-        (!u.estado || (u.estado === 'NO_ACUDIO' ? f.motivo_no === NO_ACUDIO : f.estado === u.estado));
+        (!u.estado || (u.estado === 'NO_ACUDIO' ? f.motivo_no === NO_ACUDIO : f.estado === u.estado)) &&
+        (!u.reporte || (u.reporte === 'revisar' ? f.reporte_estado === 'POR REVISAR' : u.reporte === 'sin' ? !f.reporte : !!f.reporte && f.reporte_estado !== 'POR REVISAR'));
     });
     const visibles = aplicar(filas, u);
     const err = cajaError();
@@ -1136,7 +1450,8 @@
       filtroSelect('f-estudio', 'Estudio', [['', 'Todos']].concat(estudios.map(function (x) { return [x, x]; })), u.estudio, function (v) { u.estudio = v; }),
       filtroSelect('f-hosp', 'Hospital', opcionesHospital(enRango), u.hosp, function (v) { u.hosp = v; }),
       filtroSelect('f-prio', 'Prioridad', [['', 'Todas']].concat(PRIORIDADES.map(function (x) { return [x, x]; })), u.prio, function (v) { u.prio = v; }),
-      filtroSelect('f-estado', 'Estado', [['', 'Todos'], ['PENDIENTE', 'Pendiente'], ['REALIZADO', 'Realizado'], ['NO REALIZADO', 'No realizado'], ['NO_ACUDIO', 'Paciente no acudió']], u.estado, function (v) { u.estado = v; })
+      filtroSelect('f-estado', 'Estado', [['', 'Todos'], ['PENDIENTE', 'Pendiente'], ['REALIZADO', 'Realizado'], ['NO REALIZADO', 'No realizado'], ['NO_ACUDIO', 'Paciente no acudió']], u.estado, function (v) { u.estado = v; }),
+      filtroSelect('f-reporte', 'Reporte', [['', 'Todos'], ['con', 'Con reporte'], ['sin', 'Sin reporte'], ['revisar', 'Por revisar']], u.reporte, function (v) { u.reporte = v; })
     ];
     agregar(main, [
       h('div', { class: 'cab' }, h('h2', null, 'Censo de solicitudes'),
@@ -1169,7 +1484,8 @@
       ['nombre', 'Paciente'], ['expediente', 'Expediente'], ['fecha_nacimiento', 'Fecha de nacimiento'], ['edad', 'Edad'], ['sexo', 'Sexo'], ['peso', 'Peso (kg)'], ['talla', 'Talla (cm)'],
       ['diagnostico', 'Diagnósticos'], ['motivo', 'Motivo del estudio'], ['datos_clinicos', 'Datos clínicos relevantes'], ['medico', 'Médico solicitante'], ['contacto', 'Contacto'],
       ['cita_fecha', 'Fecha de cita'], ['cita_hora', 'Hora de cita'], ['cita_medico', 'Médico de la cita'], ['sobrecupo', 'Sobrecupo'], ['notificado', 'Notificado'],
-      ['estado', 'Estado'], ['realizado_por', 'Realizado por'], ['motivo_no', 'Motivo de no realización'], ['fecha_cierre', 'Fecha de cierre'], ['origen', 'Origen']];
+      ['estado', 'Estado'], ['realizado_por', 'Realizado por'], ['motivo_no', 'Motivo de no realización'], ['fecha_cierre', 'Fecha de cierre'],
+      ['reporte_estado', 'Reporte'], ['comentario', 'Comentario'], ['comentario_por', 'Comentario guardado por'], ['origen', 'Origen']];
     const lineas = [cols.map(function (c) { return celdaCsv(c[1]); }).join(',')];
     filas.forEach(function (f) { lineas.push(cols.map(function (c) { return celdaCsv(f[c[0]]); }).join(',')); });
     descargar('censo_perifericos_' + S.hoy + '.csv', lineas.join('\r\n'));
@@ -1453,8 +1769,88 @@
           h('div', { class: 'campo' }, h('label', { for: 'nu-r' }, 'Rol'), nu.rol),
           h('div', { class: 'campo' }, h('label', { for: 'nu-c' }, 'Contraseña temporal'), nu.clave),
           h('button', { class: 'btn oscuro', type: 'submit' }, 'Crear usuario')),
-        errU)
+        errU),
+      panelPlantillas(),
+      panelReportes()
     ]);
+  }
+  /* ---------- plantillas de comentario ---------- */
+  function panelPlantillas() {
+    const guardar = async function (lista, mensaje) {
+      const r = await api('plantillas.guardar', { plantillas: lista });
+      S.plantillas = r.plantillas;
+      pintar();
+      tostada(mensaje);
+    };
+    const editar = function (i) {
+      const p = i >= 0 ? S.plantillas[i] : { nombre: '', estudio: '', texto: '' };
+      modalChico(i >= 0 ? 'Editar plantilla' : 'Nueva plantilla', function (cerrar) {
+        const err = cajaError();
+        const nombre = h('input', { type: 'text', id: 'pl-n', maxlength: '60', value: p.nombre, 'data-foco': true, placeholder: 'Ej. Ecocardiograma normal' });
+        const estudio = selector([['', 'Todos los estudios']].concat(ESTUDIOS.map(function (e) { return [e, e]; })), p.estudio, { id: 'pl-e' });
+        const texto = h('textarea', { id: 'pl-t', rows: '9', maxlength: '5000' });
+        texto.value = p.texto;
+        const btn = h('button', { class: 'btn primario ancho', type: 'submit' }, 'Guardar plantilla');
+        return h('form', { onsubmit: async function (ev) {
+          ev.preventDefault();
+          const lista = S.plantillas.slice();
+          const nueva = { nombre: nombre.value, estudio: estudio.value, texto: texto.value };
+          if (i >= 0) lista[i] = nueva; else lista.push(nueva);
+          try { await conBoton(btn, function () { return guardar(lista, i >= 0 ? 'Plantilla actualizada.' : 'Plantilla agregada.'); }); cerrar(); } catch (e) { mostrarError(err, e); }
+        } },
+        h('div', { class: 'campo' }, h('label', { for: 'pl-n' }, 'Nombre'), nombre),
+        h('div', { class: 'campo' }, h('label', { for: 'pl-e' }, 'Aparece en'), estudio),
+        h('div', { class: 'campo' }, h('label', { for: 'pl-t' }, 'Texto'), texto), err, btn);
+      });
+    };
+    return h('section', { class: 'panel' }, h('h3', null, 'Plantillas de comentario'),
+      h('p', { class: 'sub' }, 'Textos prehechos que se pueden insertar en el comentario de cada solicitud. Si elige un estudio, la plantilla solo aparece en las solicitudes de ese estudio.'),
+      S.plantillas.length ? h('ul', { class: 'lista-simple' }, S.plantillas.map(function (p, i) {
+        return h('li', null, h('span', { class: 'crece' }, h('b', null, p.nombre), ' · ' + (p.estudio || 'Todos los estudios'), h('div', { class: 'tenue recorte' }, p.texto)),
+          h('button', { class: 'btn chico', onclick: function () { editar(i); } }, 'Editar'),
+          h('button', { class: 'btn chico peligro', onclick: async function () {
+            if (!(await preguntar('¿Eliminar la plantilla?', '"' + p.nombre + '" dejará de aparecer. Los comentarios ya guardados no cambian.', 'Sí, eliminar', 'Cancelar', 'peligro'))) return;
+            try { await guardar(S.plantillas.filter(function (x, j) { return j !== i; }), 'Plantilla eliminada.'); } catch (e) { tostada(e.message, { error: true }); }
+          } }, 'Eliminar'));
+      })) : h('p', { class: 'tenue', style: 'margin:0' }, 'Aún no hay plantillas.'),
+      h('button', { class: 'btn oscuro', style: 'margin-top:12px', onclick: function () { editar(-1); } }, 'Nueva plantilla'));
+  }
+
+  /* ---------- censo automático de reportes ---------- */
+  function panelReportes() {
+    const titulo = h('h3', null, 'Censo automático de reportes de ecocardiograma');
+    const e = S.estadoReportes;
+    if (!e || e.cargando) {
+      if (!e) {
+        S.estadoReportes = { cargando: true };
+        api('reportes.estado').then(function (r) { S.estadoReportes = r; }).catch(function (x) { S.estadoReportes = { error: x.message }; })
+          .then(function () { if (ruta()[0] === 'admin' && !modalesAbiertos()) pintar(); });
+      }
+      return h('section', { class: 'panel' }, titulo, h('div', { class: 'vacio' }, 'Cargando…'));
+    }
+    if (e.error) return h('section', { class: 'panel' }, titulo, h('div', { class: 'aviso error' }, e.error));
+    const ejecutar = async function (btn, completo) {
+      if (completo && !(await preguntar('¿Revisar toda la carpeta?', 'Se revisan todos los PDF de la carpeta de reportes, no solo los nuevos. Los que ya están en el censo no se duplican. Puede tardar unos minutos.', 'Sí, revisar todo', 'Cancelar'))) return;
+      try {
+        const r = await conBoton(btn, function () { return api('reportes.ejecutar', { completo: !!completo }); });
+        S.estadoReportes = r;
+        const x = r.resultado;
+        tostada(plural(x.nuevos, 'reporte nuevo', 'reportes nuevos') + ' en el censo · ' + plural(x.automaticos, 'vinculado', 'vinculados') + ' · ' + x.revisar + ' por revisar');
+        await sincronizar(true);
+      } catch (err) { tostada(err.message, { error: true }); }
+      pintar();
+    };
+    return h('section', { class: 'panel' }, titulo,
+      h('p', { class: 'sub' }, 'Cada hora, de ' + e.horario + ', los PDF nuevos de la carpeta del ecógrafo se agregan a la pestaña "Reportes" de la hoja. Quince minutos después se buscan los reportes de las solicitudes de ecocardiograma sin reporte: si coinciden expediente, nombre y fecha de nacimiento se vinculan solos; si coinciden dos datos (siempre el nombre), quedan "por revisar".'),
+      !e.drive_api ? h('div', { class: 'aviso error' }, 'Falta activar el servicio "Drive API" en el editor de Apps Script. Vea la guía de instalación, sección 12.') : null,
+      e.drive_api && !e.activo ? h('div', { class: 'aviso alerta' }, 'La revisión automática no está activada. En el editor de Apps Script ejecute una vez la función "activarReportes" (guía de instalación, sección 12).') : null,
+      h('dl', { class: 'datos' }, dato('Revisión automática', e.activo ? 'Activa' : 'Inactiva'), dato('Solicitudes desde', fechaCorta(e.desde)),
+        dato('Último censo', e.ultimo_censo), dato('Última vinculación', e.ultima_vinculacion),
+        dato('Reportes en el censo', String(e.censados)), dato('Vinculados', String(e.vinculados)), dato('Por revisar', String(e.por_revisar))),
+      h('div', { class: 'acciones-rep', style: 'margin-top:14px' },
+        h('button', { class: 'btn oscuro', disabled: !e.drive_api, onclick: function (ev) { ejecutar(ev.currentTarget, false); } }, 'Censar y vincular ahora'),
+        h('button', { class: 'btn', disabled: !e.drive_api, onclick: function (ev) { ejecutar(ev.currentTarget, true); } }, 'Revisar toda la carpeta'),
+        h('a', { class: 'btn', href: 'https://drive.google.com/drive/folders/' + e.carpeta, target: '_blank', rel: 'noopener' }, 'Abrir la carpeta de reportes')));
   }
   function restablecer(x) {
     modalChico('Nueva contraseña para ' + x.usuario, function (cerrar) {
@@ -1472,7 +1868,7 @@
   /* ============================== arranque ============================== */
   window.addEventListener('hashchange', function () {
     if (ruta()[0] !== 'cupos') S.cupos = null;
-    if (ruta()[0] !== 'admin') S.usuarios = null;
+    if (ruta()[0] !== 'admin') S.usuarios = S.estadoReportes = null;
     S.panel = null;
     window.scrollTo(0, 0);
     pintar();
