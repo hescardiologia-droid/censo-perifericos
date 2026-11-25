@@ -12,8 +12,11 @@
   const NOMBRE_SERVICIO = CFG.NOMBRE_SERVICIO || 'Servicio de Cardiología';
 
   // Deben coincidir con la API (sirven para ordenar listas y filtros).
-  const ESTUDIOS = ['Ecocardiograma', 'Ecocardiograma transesofágico', 'Monitoreo Holter', 'Prueba de esfuerzo'];
-  const CORTO = { 'Ecocardiograma': 'Eco', 'Ecocardiograma transesofágico': 'ETE', 'Monitoreo Holter': 'Holter', 'Prueba de esfuerzo': 'P. esfuerzo' };
+  const ESTUDIOS = ['Ecocardiograma', 'Ecocardiograma transesofágico', 'Monitoreo Holter', 'Prueba de esfuerzo', 'Resonancia magnética cardiaca'];
+  const CORTO = { 'Ecocardiograma': 'Eco', 'Ecocardiograma transesofágico': 'ETE', 'Monitoreo Holter': 'Holter', 'Prueba de esfuerzo': 'P. esfuerzo',
+    'Resonancia magnética cardiaca': 'RM' };
+  const HOLTER = 'Monitoreo Holter';
+  const DIAS_PAPELERA = 15; // el estudio Holter va a la papelera de Drive 15 días después de notificar (lo hace el servidor)
   const PRIORIDADES = ['Urgencia', 'A demanda'];
   const HOSPITALES = [
     'H.N. "Dr. Juan Jose Fernandez", Zacamil', 'H.N. "Dr. Luis Edmundo Vasquez", Chalatenango', 'H.N. Neumologico "Dr. Jose Saldaña"',
@@ -41,7 +44,7 @@
   const S = {
     token: '', usuario: null, medicos: [], motivos: [], config: null, hoy: '', filas: new Map(), repetidas: new Set(),
     desde: '', sincronizado: '', cargando: false, errorCarga: '', ui: {}, archivos: new Map(), cupos: null, stats: null, usuarios: null,
-    panel: null, detalleAbierto: null, plantillas: [], estudiosConReporte: [], estadoReportes: null
+    panel: null, detalleAbierto: null, plantillas: [], estudiosConReporte: [], estadoReportes: null, holterDesde: ''
   };
 
   /* ============================== utilidades ============================== */
@@ -327,6 +330,7 @@
     S.hoy = r.fecha;
     S.plantillas = r.plantillas || [];
     S.estudiosConReporte = r.estudios_con_reporte || [];
+    S.holterDesde = r.holter_desde || '';
     return r;
   }
   /** Trae del servidor los últimos días y todos los pendientes. Lo más antiguo ya cargado se conserva. */
@@ -452,6 +456,7 @@
     else if (r[0] === 'agenda') { titulo = 'Agenda'; vistaAgenda(main, /^\d{4}-\d{2}-\d{2}$/.test(r[1] || '') ? r[1] : S.hoy); }
     else if (r[0] === 'pendientes') { titulo = 'Solicitudes pendientes'; vistaPendientes(main); }
     else if (r[0] === 'censo') { titulo = 'Censo'; sub = 'Todas las solicitudes'; vistaCenso(main); }
+    else if (r[0] === 'holter') { titulo = 'Holter'; sub = 'Estudio, reporte y notificación'; vistaHolter(main); }
     else if (r[0] === 'estadisticas') { titulo = 'Estadísticas'; sub = ''; vistaEstadisticas(main); }
     else if (r[0] === 'cupos') { titulo = 'Control de cupos'; vistaCupos(main); }
     else if (r[0] === 'admin' && esAdmin()) { titulo = 'Usuarios y médicos'; sub = ''; vistaAdmin(main); }
@@ -475,7 +480,9 @@
     const atendidas = deHoy.filter(function (f) { return f.estado !== 'PENDIENTE'; }).length;
     const recibidasHoy = todas.filter(function (f) { return f.fecha === S.hoy; }).length;
     const urg = pend.filter(function (f) { return f.prioridad === 'Urgencia'; }).length;
-    const porRevisar = todas.filter(function (f) { return f.reporte_estado === 'POR REVISAR'; }).length;
+    const porRevisar = todas.filter(function (f) { return f.reporte_estado === 'POR REVISAR' || f.holter_estado === 'POR REVISAR'; }).length;
+    const hg = gruposHolter();
+    const holterAbiertos = new Set(hg.estudio.concat(hg.reporte, hg.notificar).map(function (f) { return f.id; })).size;
     const sinDatos = !S.sincronizado;
     const tarjeta = function (href, clase, nombre, cifra, cifraNota, nota) {
       return h('a', { class: 'modulo ' + clase, href: href }, h('div', { class: 'nombre' }, nombre),
@@ -488,14 +495,16 @@
       porRevisar ? h('a', { class: 'aviso alerta aviso-enlace', href: '#/censo', onclick: function () {
         const u = uiCenso();
         Object.assign(u, { reporte: 'revisar', q: '', estudio: '', hosp: '', estado: '', prio: '', desde: S.desde || u.desde, hasta: S.hoy });
-      } }, h('b', null, plural(porRevisar, 'reporte de ecocardiograma por revisar', 'reportes de ecocardiograma por revisar') + '.'),
-        ' Se encontraron reportes que podrían corresponder a estas solicitudes, pero no coinciden todos los datos. Toque aquí para revisarlos.') : null,
+      } }, h('b', null, plural(porRevisar, 'reporte o estudio por revisar', 'reportes o estudios por revisar') + '.'),
+        ' Se encontraron archivos que podrían corresponder a estas solicitudes, pero no coinciden todos los datos. Toque aquí para revisarlos.') : null,
       h('div', { class: 'modulos' },
         tarjeta('#/citas', 'principal', 'Asignación de citas', sinCita.length, sinCita.length === 1 ? 'por agendar' : 'por agendar',
           plural(conCita.length, 'solicitud agendada', 'solicitudes agendadas') + ' en espera'),
         tarjeta('#/agenda', '', 'Agenda de hoy', deHoy.length, deHoy.length === 1 ? 'cita hoy' : 'citas hoy',
           atendidas + ' marcadas · ' + (deHoy.length - atendidas) + ' por marcar'),
-        tarjeta('#/pendientes', '', 'Solicitudes pendientes', pend.length, 'sin completar', plural(urg, 'urgencia', 'urgencias') + ' · ' + sinCita.length + ' sin cita')),
+        tarjeta('#/pendientes', '', 'Solicitudes pendientes', pend.length, 'sin completar', plural(urg, 'urgencia', 'urgencias') + ' · ' + sinCita.length + ' sin cita'),
+        tarjeta('#/holter', '', 'Holter', holterAbiertos, 'en seguimiento',
+          hg.estudio.length + ' sin estudio · ' + hg.reporte.length + ' sin reporte · ' + hg.notificar.length + ' por notificar')),
       h('h3', { class: 'seccion-t' }, 'Gestión'),
       h('div', { class: 'modulos' },
         tarjeta('#/censo', 'util', 'Censo', null, '', 'Todas las solicitudes, con filtros y descarga'),
@@ -645,7 +654,13 @@
       return [textoCita(f), f.cita_medico ? h('div', { class: 'tenue' }, f.cita_medico) : null,
         f.motivo_no === NO_ACUDIRA ? h('div', { class: 'tenue' }, 'cancelada') : null];
     } },
-    medicoCita: { t: 'Médico', e: 'Médico', celda: function (f) { return f.cita_medico || '—'; } }
+    medicoCita: { t: 'Médico', e: 'Médico', celda: function (f) { return f.cita_medico || '—'; } },
+    seguimiento: { t: 'Seguimiento', clase: 'c-seg', e: 'Seguimiento', celda: celdaSeguimiento },
+    notificar: { t: 'Enviar reporte', clase: 'c-marcar', celda: function (f) {
+      return h('div', { class: 'marcar-caja' },
+        h('button', { type: 'button', class: 'btn chico wa no-imprimir', onclick: function (ev) { ev.stopPropagation(); enviarReporte(f); } }, 'Enviar por WhatsApp'),
+        h('button', { type: 'button', class: 'btn chico no-imprimir', onclick: function (ev) { ev.stopPropagation(); abrirDetalle(S.filas.get(f.id) || f, { ir: 'reporte' }); } }, 'Ver reporte'));
+    } }
   };
 
   function tabla(filas, u, op) {
@@ -965,9 +980,10 @@
       return;
     }
     const r = resumenDia(fecha, '');
-    const filas = citasDe(fecha).filter(function (f) { return !u.estudio || f.estudio === u.estudio; })
+    const delDia = citasDe(fecha);
+    const filas = delDia.filter(function (f) { return !u.estudio || f.estudio === u.estudio; })
       .sort(function (a, b) { return (a.motivo_no === NO_ACUDIRA) - (b.motivo_no === NO_ACUDIRA) || ORDENES.hora[1](a, b); });
-    const activas = filas.filter(function (f) { return f.motivo_no !== NO_ACUDIRA; });
+    const activas = delDia.filter(function (f) { return f.motivo_no !== NO_ACUDIRA; });
     const pend = activas.filter(function (f) { return f.estado === 'PENDIENTE'; }).length;
     const ir = function (d) { location.hash = '#/agenda/' + d; };
     const esHoy = fecha === S.hoy;
@@ -981,11 +997,16 @@
           h('input', { type: 'date', 'aria-label': 'Ir a la fecha', value: fecha, onchange: function (ev) { if (ev.target.value) ir(ev.target.value); } }),
           h('button', { class: 'btn', 'aria-label': 'Día siguiente', onclick: function () { ir(sumarDias(fecha, 1)); } }, '›'),
           h('button', { class: 'btn', onclick: function () { window.print(); } }, 'Imprimir'))),
-      h('div', { class: 'resumen-dia' }, r.det.map(function (x) {
-        return h('button', { type: 'button', class: 'cal-filtro', 'aria-pressed': String(u.estudio === x.estudio), title: 'Mostrar solo ' + x.estudio,
-          onclick: function () { u.estudio = u.estudio === x.estudio ? '' : x.estudio; pintar(); } },
-        x.estudio + ' ' + x.usados + '/' + x.cupos + (x.cerrado ? ' · ' + (x.motivo || 'sin cupos') : ''));
-      })),
+      // Una pestaña por estudio: citas del día / cupos (en rojo si hay sobrecupo).
+      h('div', { class: 'pestanas pestanas-estudio no-imprimir', role: 'tablist' },
+        h('button', { class: 'pestana', role: 'tab', 'aria-selected': String(!u.estudio), onclick: function () { u.estudio = ''; pintar(); } }, 'Todos', h('span', { class: 'n' }, activas.length)),
+        r.det.map(function (x) {
+          return h('button', { class: 'pestana', role: 'tab', 'aria-selected': String(u.estudio === x.estudio),
+            title: x.estudio + ': ' + x.usados + ' citas de ' + x.cupos + ' cupos' + (x.cerrado ? ' · ' + (x.motivo || 'sin cupos') : ''),
+            onclick: function () { u.estudio = x.estudio; pintar(); } },
+          CORTO[x.estudio], h('span', { class: 'n' + (x.usados > x.cupos ? ' sobre' : '') }, x.usados + '/' + x.cupos));
+        })),
+      u.estudio ? h('p', { class: 'solo-imprimir' }, 'Solo ' + u.estudio) : null,
       tabla(filas, { limite: 500, orden: 'hora', dir: 1 }, { ordenes: [], columnas: ['marcar', 'hora', 'prioridad', 'paciente', 'edad', 'hospital', 'estudio', 'medicoCita'],
         vacio: 'No hay citas ' + (u.estudio ? 'de ' + u.estudio + ' ' : '') + 'para este día.' }),
       h('p', { class: 'no-imprimir', style: 'color:#51606f;font-size:13.5px' }, 'Toque un paciente para ver la solicitud completa, con el EKG y la radiografía. Las citas canceladas ("No podrá acudir") aparecen al final, en gris.')
@@ -1016,6 +1037,77 @@
     ]);
   }
 
+  /* ============================== Holter ============================== */
+  // Seguimiento desde la actualización (HOLTER_DESDE del servidor); los anteriores solo aparecen en "Todas".
+  function enSeguimiento(f) { const d = S.holterDesde || S.hoy; return f.fecha >= d || (!!f.cita_fecha && f.cita_fecha >= d); }
+  function gruposHolter() {
+    const todos = filasArr().filter(esHolter);
+    const activos = todos.filter(function (f) { return f.estado !== 'NO REALIZADO' && enSeguimiento(f); });
+    // El estudio se toma el día de la cita: cuenta como colocado si ya se marcó o si la cita es de hoy o antes.
+    const colocado = function (f) { return f.estado === 'REALIZADO' || (f.estado === 'PENDIENTE' && !!f.cita_fecha && f.cita_fecha <= S.hoy); };
+    return {
+      estudio: activos.filter(function (f) { return colocado(f) && !estudioListo(f) && !f.reporte_notificado; }),
+      reporte: activos.filter(function (f) { return colocado(f) && estudioListo(f) && !reporteListo(f); }),
+      notificar: todos.filter(function (f) { return f.estado !== 'NO REALIZADO' && reporteListo(f) && !f.reporte_notificado; }),
+      todas: todos
+    };
+  }
+  function celdaSeguimiento(f) {
+    const ch = function (clase, texto) { return h('span', { class: 'chip ' + clase }, texto); };
+    const e = f.holter_estado;
+    const est = !esHolter(f) ? null : !f.holter_estudio ? ch('gris', 'Sin estudio') : e === 'POR REVISAR' ? ch('alerta', 'Estudio por revisar')
+      : e === 'EN PAPELERA' ? ch('gris', 'Estudio en papelera') : ch('ok', 'Estudio ✓' + (f.holter_equipo ? ' ' + f.holter_equipo : ''));
+    const rep = !f.reporte ? ch('gris', 'Sin reporte') : f.reporte_estado === 'POR REVISAR' ? ch('alerta', 'Reporte por revisar') : ch('ok', 'Reporte ✓');
+    const not = f.reporte_notificado ? ch('ok', 'Notificado ' + fechaCorta(f.reporte_notificado).slice(0, 5)) : null;
+    let dias = null;
+    if (f.cita_fecha && f.cita_fecha <= S.hoy && !f.reporte_notificado && f.estado !== 'NO REALIZADO') {
+      const n = diasEntre(f.cita_fecha, S.hoy);
+      dias = h('div', { class: 'tenue' + (n > 4 ? ' atraso' : ''), title: 'Toma de 24 h y lectura de hasta 72 h: más de 4 días es un atraso' },
+        n === 0 ? 'Cita hoy' : 'Hace ' + plural(n, 'día', 'días') + ' de la cita');
+    }
+    return [h('div', { class: 'chips' }, est, rep, not), dias];
+  }
+  function vistaHolter(main) {
+    const u = ui('holter', { tab: 'estudio', orden: 'cita', dir: 1, fHosp: '', fEstado: '' });
+    const g = gruposHolter();
+    const titulos = { estudio: 'Pendientes de cargar estudio', reporte: 'Pendientes de cargar reporte', notificar: 'Pendientes de notificar', todas: 'Todas las solicitudes' };
+    const cortos = { estudio: 'Sin estudio', reporte: 'Sin reporte', notificar: 'Por notificar', todas: 'Todas' };
+    const ayudas = {
+      estudio: 'Holter colocados (marcados como realizados o con cita hasta hoy) que aún no tienen el estudio (.zip de Norav o .cmszip de BTL). Se buscan solos cada hora en la carpeta de Drive; si no aparece, use "+ Subir estudio" o búsquelo en el censo desde la solicitud.',
+      reporte: 'Con el estudio cargado, falta el reporte en PDF. Los reportes de BTL y Norav se buscan solos cada hora en su carpeta; también se pueden subir.',
+      notificar: 'Con el reporte listo: envíelo por WhatsApp al médico que solicitó el estudio y márquelo como notificado. ' + DIAS_PAPELERA + ' días después de notificar, el estudio se envía a la papelera de Drive (la copia queda en la PC).',
+      todas: 'Todas las solicitudes de Holter cargadas en la app, con su seguimiento.'
+    };
+    const cambiar = function (t) {
+      u.tab = t; u.limite = 150;
+      if (t === 'todas') { u.orden = 'fecha'; u.dir = -1; } else { u.orden = 'cita'; u.dir = 1; }
+      pintar();
+    };
+    const base = g[u.tab].filter(function (f) {
+      if (u.fHosp && f.hospital !== u.fHosp) return false;
+      if (u.tab !== 'todas' || !u.fEstado) return true;
+      return u.fEstado === 'notificado' ? !!f.reporte_notificado : u.fEstado === 'papelera' ? f.holter_estado === 'EN PAPELERA' : f.estado === u.fEstado;
+    });
+    const atrasados = g.estudio.concat(g.reporte).filter(function (f) { return f.cita_fecha && diasEntre(f.cita_fecha, S.hoy) > 4; }).length;
+    const ordenes = ['cita', 'fecha', 'nombre', 'hospital'];
+    agregar(main, [
+      h('div', { class: 'cab' }, h('h2', null, 'Seguimiento de Holter'),
+        h('span', { class: 'estado-form' }, 'Toma de 24 h y lectura de hasta 72 h' + (S.holterDesde ? ' · seguimiento desde el ' + fechaCorta(S.holterDesde) : '') + '.')),
+      atrasados ? h('div', { class: 'aviso alerta' }, plural(atrasados, 'Holter lleva', 'Holter llevan') + ' más de 4 días desde la cita sin estudio o sin reporte.') : null,
+      h('div', { class: 'pestanas', role: 'tablist' }, Object.keys(titulos).map(function (t) {
+        return h('button', { class: 'pestana', role: 'tab', 'aria-selected': String(u.tab === t), 'aria-label': titulos[t], onclick: function () { cambiar(t); } },
+          h('span', { class: 'largo' }, titulos[t]), h('span', { class: 'corto' }, cortos[t]), h('span', { class: 'n' }, g[t].length));
+      })),
+      h('p', { class: 'ayuda-tab' }, ayudas[u.tab]),
+      controles(u, ordenes, [
+        filtroSelect('ho-hosp', 'Hospital', opcionesHospital(g[u.tab]), u.fHosp, function (v) { u.fHosp = v; }),
+        u.tab === 'todas' ? filtroSelect('ho-estado', 'Estado', [['', 'Todos'], ['PENDIENTE', 'Pendiente'], ['REALIZADO', 'Realizado'], ['NO REALIZADO', 'No realizado'],
+          ['notificado', 'Reporte notificado'], ['papelera', 'Estudio en papelera']], u.fEstado, function (v) { u.fEstado = v; }) : null].filter(Boolean)),
+      tabla(aplicar(base, u), u, { ordenes: ordenes, columnas: [u.tab === 'notificar' ? 'notificar' : 'marcar', 'citaTexto', 'paciente', 'hospital', 'seguimiento'],
+        vacio: { estudio: 'No hay Holter esperando el estudio.', reporte: 'No hay Holter esperando el reporte.', notificar: 'No hay reportes por notificar.', todas: 'No hay solicitudes de Holter en el periodo cargado.' }[u.tab] })
+    ]);
+  }
+
   /* ============================== detalle ============================== */
   async function obtenerArchivo(id, cual, n) {
     return descargarArchivo(id + '|' + cual + '|' + (n || 0), function () { return api('archivo', { id: id, cual: cual, n: n || 0 }); });
@@ -1026,7 +1118,8 @@
     const bin = atob(d.b64);
     const bytes = new Uint8Array(bin.length);
     for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const a = { url: URL.createObjectURL(new Blob([bytes], { type: d.tipo })), tipo: d.tipo, nombre: d.nombre };
+    const blob = new Blob([bytes], { type: d.tipo });
+    const a = { url: URL.createObjectURL(blob), blob: blob, tipo: d.tipo, nombre: d.nombre };
     S.archivos.set(llave, a);
     if (S.archivos.size > 24) { const vieja = S.archivos.keys().next().value; URL.revokeObjectURL(S.archivos.get(vieja).url); S.archivos.delete(vieja); }
     return a;
@@ -1074,45 +1167,76 @@
         } }, 'Archivo ' + (i + 1));
       })));
   }
-  /* ============================== reporte del estudio ============================== */
+  /* ============================== reporte y estudio Holter ============================== */
   const MAX_REPORTE = 8 * 1024 * 1024;
-  const TEXTO_REPORTE = { 'AUTOMÁTICO': 'Vinculado automáticamente', 'CONFIRMADO': 'Reporte confirmado', 'CARGADO': 'Cargado a mano', 'POR REVISAR': 'Por revisar' };
+  const MAX_ESTUDIO = 1024 * 1024 * 1024;
+  const TEXTO_ARCHIVO = { 'AUTOMÁTICO': 'Vinculado automáticamente', 'CONFIRMADO': 'Confirmado', 'CARGADO': 'Cargado a mano', 'POR REVISAR': 'Por revisar',
+    'EN PAPELERA': 'En la papelera de Drive' };
+  // Lo que cambia entre el reporte (PDF o foto) y el estudio Holter (.zip / .cmszip).
+  const TIPOS = {
+    reporte: { url: 'reporte', estado: 'reporte_estado', info: 'reporte_info', nombre: 'reporte', Nombre: 'Reporte', seccion: 'seccion-reporte' },
+    estudio: { url: 'holter_estudio', estado: 'holter_estado', info: 'holter_info', nombre: 'estudio', Nombre: 'Estudio', seccion: 'seccion-estudio' }
+  };
   function conCensoReportes(f) { return S.estudiosConReporte.indexOf(f.estudio) >= 0; }
+  function esHolter(f) { return f.estudio === HOLTER; }
+  function reporteListo(f) { return !!f.reporte && f.reporte_estado !== 'POR REVISAR'; }
+  function estudioListo(f) { return !!f.holter_estudio && f.holter_estado !== 'POR REVISAR'; }
+  function textoEquipo(e) { return e === 'BTL' ? 'BTL (.cmszip)' : e === 'Norav' ? 'Norav (.zip)' : ''; }
   /** Quita de la memoria el archivo descargado (el reporte cambió). */
   function olvidarArchivo(llave) {
     Array.from(S.archivos.keys()).forEach(function (k) {
       if (k.indexOf(llave) === 0) { URL.revokeObjectURL(S.archivos.get(k).url); S.archivos.delete(k); }
     });
   }
-  function chipReporte(f) {
-    if (!f.reporte) return null;
-    return h('span', { class: 'chip ' + (f.reporte_estado === 'POR REVISAR' ? 'alerta' : 'ok') }, TEXTO_REPORTE[f.reporte_estado] || 'Con reporte');
+  function chipArchivo(f, tipo) {
+    const T = TIPOS[tipo || 'reporte'];
+    if (!f[T.url]) return null;
+    const e = f[T.estado];
+    return h('span', { class: 'chip ' + (e === 'POR REVISAR' ? 'alerta' : e === 'EN PAPELERA' ? 'gris' : 'ok') },
+      (tipo === 'estudio' && e !== 'EN PAPELERA' ? 'Estudio ' : '') + (TEXTO_ARCHIVO[e] || 'Con ' + T.nombre).replace(/^Confirmado$/, tipo === 'estudio' ? 'confirmado' : 'Reporte confirmado'));
   }
   /** Botón junto a "Realizado por": subir el reporte, verlo o revisarlo. */
   function botonReporte(f) {
     if (f.reporte) {
       const revisar = f.reporte_estado === 'POR REVISAR';
       return h('button', { type: 'button', class: 'btn chico btn-rep no-imprimir ' + (revisar ? 'revisar' : 'con'),
-        title: revisar ? 'Se encontró un reporte que podría ser de este paciente. Revíselo y confírmelo.' : TEXTO_REPORTE[f.reporte_estado] || 'Ver el reporte',
+        title: revisar ? 'Se encontró un reporte que podría ser de este paciente. Revíselo y confírmelo.' : TEXTO_ARCHIVO[f.reporte_estado] || 'Ver el reporte',
         onclick: function (ev) { ev.stopPropagation(); abrirDetalle(S.filas.get(f.id) || f, { ir: 'reporte' }); } }, revisar ? 'Revisar reporte' : 'Ver reporte ✓');
     }
     if (f.estado === 'NO REALIZADO') return null;
     return h('button', { type: 'button', class: 'btn chico btn-rep sin no-imprimir',
-      title: 'Subir una foto o un PDF del reporte' + (conCensoReportes(f) ? '. El reporte del ecógrafo también se busca solo cada hora.' : ''),
+      title: 'Subir una foto o un PDF del reporte' + (conCensoReportes(f) ? '. El reporte también se busca solo cada hora en la carpeta de Drive.' : ''),
       onclick: function (ev) { ev.stopPropagation(); elegirArchivoReporte(f, ev.currentTarget); } }, '+ Subir reporte');
   }
-  function celdaMarcar(f) { return h('div', { class: 'marcar-caja' }, selectorMarcado(f), botonReporte(f)); }
+  /** En los Holter, además: subir el estudio (.zip de Norav o .cmszip de BTL), verlo o revisarlo. */
+  function botonEstudio(f) {
+    if (!esHolter(f)) return null;
+    if (f.holter_estudio) {
+      const e = f.holter_estado;
+      return h('button', { type: 'button', class: 'btn chico btn-rep no-imprimir ' + (e === 'POR REVISAR' ? 'revisar' : e === 'EN PAPELERA' ? 'papelera' : 'con'),
+        title: e === 'POR REVISAR' ? 'Se encontró un estudio que podría ser de este paciente. Revíselo y confírmelo.' : f.holter_info || '',
+        onclick: function (ev) { ev.stopPropagation(); abrirDetalle(S.filas.get(f.id) || f, { ir: 'estudio' }); } },
+      e === 'POR REVISAR' ? 'Revisar estudio' : e === 'EN PAPELERA' ? 'Estudio en papelera' : 'Estudio ✓' + (f.holter_equipo ? ' ' + f.holter_equipo : ''));
+    }
+    if (f.estado === 'NO REALIZADO') return null;
+    return h('button', { type: 'button', class: 'btn chico btn-rep sin no-imprimir', title: 'Subir el estudio (.zip de Norav o .cmszip de BTL). También se busca solo cada hora en la carpeta de Drive.',
+      onclick: function (ev) { ev.stopPropagation(); elegirArchivoEstudio(f); } }, '+ Subir estudio');
+  }
+  function celdaMarcar(f) { return h('div', { class: 'marcar-caja' }, selectorMarcado(f), botonReporte(f), botonEstudio(f)); }
 
-  function elegirArchivoReporte(f, btn) {
-    const input = h('input', { type: 'file', accept: 'image/*,application/pdf,.pdf', style: 'display:none' });
+  function elegirArchivo(accept, fn) {
+    const input = h('input', { type: 'file', accept: accept, style: 'display:none' });
     input.addEventListener('change', function () {
       const archivo = input.files && input.files[0];
       input.remove();
-      if (archivo) subirReporte(f, archivo, btn);
+      if (archivo) fn(archivo);
     });
     document.body.appendChild(input);
     input.click();
   }
+  function elegirArchivoReporte(f, btn) { elegirArchivo('image/*,application/pdf,.pdf', function (a) { subirReporte(f, a, btn); }); }
+  function elegirArchivoEstudio(f) { elegirArchivo('.zip,.cmszip', function (a) { subirEstudio(f, a); }); }
+
   /** PDF tal cual; las fotos se reducen (máx. 2400 px, JPG) para que suban rápido con mala conexión. */
   async function prepararReporte(archivo) {
     const ext = (String(archivo.name || '').split('.').pop() || '').toLowerCase();
@@ -1167,27 +1291,89 @@
     refrescarDetalle(f.id);
     pintar();
   }
-  async function accionReporte(f, accion, btn, mensaje) {
+
+  /** Sube el estudio Holter por partes de 8 MB directo a Drive, con barra de avance; reintenta una parte si se corta la red. */
+  async function subirEstudio(f, archivo) {
+    if (!/\.(zip|cmszip)$/i.test(archivo.name || '')) { tostada('El estudio debe ser un archivo .zip (Norav) o .cmszip (BTL).', { error: true }); return; }
+    if (archivo.size > MAX_ESTUDIO) { tostada('El estudio pesa más de 1 GB.', { error: true }); return; }
+    if (!archivo.size) { tostada('El archivo está vacío.', { error: true }); return; }
+    if (f.holter_estudio && f.holter_estado !== 'EN PAPELERA' && !(await preguntar('¿Reemplazar el estudio?', 'Esta solicitud ya tiene un estudio. El archivo nuevo lo reemplazará.', 'Sí, reemplazar', 'Cancelar'))) return;
+    let cancelado = false, terminado = false;
+    const barra = h('div', { class: 'progreso-barra' }, h('span'));
+    const texto = h('div', { class: 'tenue', style: 'margin-top:8px' }, 'Preparando…');
+    const err = cajaError();
+    const mb = function (n) { return (n / 1048576).toFixed(1).replace('.', ',') + ' MB'; };
+    const avance = function (n) {
+      barra.firstChild.style.width = Math.round(100 * n / archivo.size) + '%';
+      texto.textContent = mb(n) + ' de ' + mb(archivo.size) + ' (' + Math.round(100 * n / archivo.size) + ' %)';
+    };
+    const salir = function (e) { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', salir);
+    let cerrarModal;
+    abrirModal(function (cerrar) {
+      cerrarModal = cerrar;
+      return h('div', { class: 'modal chico' }, h('div', { class: 'modal-cab' }, h('h2', null, 'Subiendo estudio Holter')),
+        h('div', { class: 'modal-cuerpo' }, h('div', { class: 'todo' },
+          h('p', { style: 'margin:0 0 10px' }, h('b', null, archivo.name), h('br'), f.nombre + ' · ' + textoEquipo(/\.cmszip$/i.test(archivo.name) ? 'BTL' : 'Norav')),
+          barra, texto, err,
+          h('p', { class: 'tenue', style: 'font-size:13px' }, 'No cierre esta ventana hasta que termine. Con una conexión lenta puede tardar varios minutos.'),
+          h('button', { type: 'button', class: 'btn', onclick: function () { cancelado = true; cerrar(); } }, 'Cancelar'))));
+    }, { antesDeCerrar: function () { return terminado || cancelado || preguntar('¿Cancelar la subida?', 'El estudio quedará sin subir.', 'Sí, cancelar', 'Seguir subiendo', 'peligro').then(function (ok) { if (ok) cancelado = true; return ok; }); } });
     try {
-      const r = await conBoton(btn, function () { return api(accion, { id: f.id }); });
-      if (accion !== 'reporte.confirmar') olvidarArchivo(f.id + '|reporte|');
+      const ini = await api('estudio.subir.iniciar', { id: f.id, nombre: archivo.name, tamano: archivo.size });
+      let inicio = 0, final = null;
+      avance(0);
+      while (!final) {
+        if (cancelado) throw Object.assign(new Error('Subida cancelada.'), { code: 'CANCELADA' });
+        const b64 = await aBase64(archivo.slice(inicio, inicio + ini.parte));
+        let r, intentos = 0;
+        for (;;) {
+          try { r = await api('estudio.subir.parte', { subida: ini.subida, inicio: inicio, b64: b64 }); break; } catch (e) {
+            if ((e.code === 'RED' || e.code === 'OCUPADO') && ++intentos <= 4 && !cancelado) {
+              texto.textContent = 'Se cortó la conexión; reintentando (' + intentos + ' de 4)…';
+              await new Promise(function (ok) { setTimeout(ok, 3000 * intentos); });
+              continue;
+            }
+            throw e;
+          }
+        }
+        if (r.completo) final = r; else { inicio = r.recibido; avance(inicio); }
+      }
+      terminado = true;
+      const x = aplicarFila(final);
+      cerrarModal();
+      tostada('Estudio cargado · ' + x.nombre);
+    } catch (e) {
+      terminado = true;
+      if (e.code !== 'CANCELADA') { mostrarError(err, e); texto.textContent = 'La subida no se completó.'; } else if (cerrarModal) cerrarModal();
+    } finally {
+      window.removeEventListener('beforeunload', salir);
+    }
+    refrescarDetalle(f.id);
+    pintar();
+  }
+
+  async function accionArchivo(f, accion, btn, mensaje, tipo, datos) {
+    try {
+      const r = await conBoton(btn, function () { return api(accion, Object.assign({ id: f.id, tipo: tipo || 'reporte' }, datos || {})); });
+      if (accion !== 'reporte.confirmar' && accion !== 'reporte.notificar') olvidarArchivo(f.id + '|reporte|');
       aplicarFila(r);
       tostada(mensaje);
     } catch (e) { tostada(e.message, { error: true }); }
     refrescarDetalle(f.id);
     pintar();
   }
+  function botonChico(texto, clase, fn) { return h('button', { type: 'button', class: 'btn chico ' + (clase || ''), onclick: function (ev) { fn(ev.currentTarget); } }, texto); }
 
   /** Contenido de la sección "Reporte del estudio" en el detalle. */
   function pintarReporte(caja, f) {
     caja.textContent = '';
     const censo = conCensoReportes(f);
-    const boton = function (texto, clase, fn) { return h('button', { type: 'button', class: 'btn chico ' + (clase || ''), onclick: function (ev) { fn(ev.currentTarget); } }, texto); };
-    const subir = boton(f.reporte ? 'Reemplazar (subir foto o PDF)' : 'Subir foto o PDF', f.reporte ? '' : 'oscuro', function (b) { elegirArchivoReporte(f, b); });
-    const buscar = censo ? boton(f.reporte ? 'Elegir otro del censo' : 'Buscar en el censo de reportes', '', function () { elegirDelCenso(f); }) : null;
+    const subir = botonChico(f.reporte ? 'Reemplazar (subir foto o PDF)' : 'Subir foto o PDF', f.reporte ? '' : 'oscuro', function (b) { elegirArchivoReporte(f, b); });
+    const buscar = censo ? botonChico(f.reporte ? 'Elegir otro del censo' : 'Buscar en el censo de reportes', '', function () { elegirDelCenso(f, 'reporte'); }) : null;
     if (!f.reporte) {
       agregar(caja, [
-        h('p', { class: 'tenue', style: 'margin:0 0 6px' }, 'Sin reporte.' + (censo ? ' El reporte del ecógrafo se busca automáticamente cada hora (7:00 a. m. a 3:59 p. m.). También puede buscarlo en el censo o subir una foto o un PDF.' : '')),
+        h('p', { class: 'tenue', style: 'margin:0 0 6px' }, 'Sin reporte.' + (censo ? ' El reporte se busca automáticamente cada hora (7:00 a. m. a 3:59 p. m.) en la carpeta de Drive. También puede buscarlo en el censo o subir una foto o un PDF.' : '')),
         f.reporte_info ? h('p', { class: 'tenue', style: 'margin:0 0 10px' }, f.reporte_info) : null,
         h('div', { class: 'acciones-rep' }, subir, buscar)]);
       return;
@@ -1196,35 +1382,81 @@
     const vistaRep = panelArchivo(f, 'reporte', 'Reporte');
     vistaRep.classList.add('reporte');
     agregar(caja, [
-      h('div', { class: 'linea-rep' }, chipReporte(f), f.reporte_info ? h('span', { class: 'tenue' }, f.reporte_info) : null),
+      h('div', { class: 'linea-rep' }, chipArchivo(f, 'reporte'), f.reporte_info ? h('span', { class: 'tenue' }, f.reporte_info) : null),
       revisar ? h('div', { class: 'aviso alerta', style: 'margin-top:0' }, h('b', null, '¿Este reporte es de ' + f.nombre + '?'),
         ' Exp. ' + (f.expediente || 's/d') + ' · nacimiento ' + (f.fecha_nacimiento || 's/d') + '. Compare los datos del reporte antes de confirmar.') : null,
       h('div', { class: 'acciones-rep' },
-        revisar ? boton('Sí, corresponde', 'primario', function (b) { accionReporte(f, 'reporte.confirmar', b, 'Reporte confirmado.'); }) : null,
-        revisar ? boton('No corresponde', 'peligro', function (b) { accionReporte(f, 'reporte.descartar', b, 'Se quitó el reporte propuesto; no se volverá a proponer.'); }) : null,
+        revisar ? botonChico('Sí, corresponde', 'primario', function (b) { accionArchivo(f, 'reporte.confirmar', b, 'Reporte confirmado.'); }) : null,
+        revisar ? botonChico('No corresponde', 'peligro', function (b) { accionArchivo(f, 'reporte.descartar', b, 'Se quitó el reporte propuesto; no se volverá a proponer.'); }) : null,
         buscar, subir,
-        revisar ? null : boton('Quitar reporte', 'peligro', async function (b) {
+        revisar ? null : botonChico('Quitar reporte', 'peligro', async function (b) {
           if (await preguntar('¿Quitar el reporte?', 'La solicitud quedará sin reporte.' + (censo ? ' Ese archivo no se le volverá a proponer automáticamente.' : ''), 'Sí, quitar', 'Cancelar', 'peligro')) {
-            accionReporte(f, 'reporte.descartar', b, 'Reporte quitado.');
+            accionArchivo(f, 'reporte.descartar', b, 'Reporte quitado.');
           }
         })),
+      !revisar ? lineaNotificacion(f) : null,
       h('div', { style: 'margin-top:12px' }, vistaRep)]);
   }
 
-  /** Busca en el censo de reportes (los más parecidos al paciente primero) y permite elegir el correcto. */
-  function elegirDelCenso(f) {
+  /** "Notificado el … por …" o el botón para enviar el reporte por WhatsApp al médico solicitante. */
+  function lineaNotificacion(f) {
+    if (f.reporte_notificado) {
+      return h('div', { class: 'linea-rep notif' }, h('span', { class: 'chip ok' }, 'Reporte notificado'),
+        h('span', { class: 'tenue' }, fechaHora(f.reporte_notificado) + (f.reporte_notificado_por ? ' · ' + f.reporte_notificado_por : '')),
+        f.holter_estado === 'EN PAPELERA' ? null : botonChico('Deshacer', '', function (b) { accionArchivo(f, 'reporte.notificar', b, 'Notificación deshecha.', 'reporte', { deshacer: true }); }));
+    }
+    return h('div', { class: 'acciones-rep notif' },
+      botonChico('Enviar reporte por WhatsApp', 'wa', function () { enviarReporte(f); }),
+      botonChico('Marcar como notificado', '', function (b) { accionArchivo(f, 'reporte.notificar', b, 'Reporte marcado como notificado.'); }));
+  }
+
+  /** Sección "Estudio Holter" en el detalle. */
+  function pintarEstudio(caja, f) {
+    caja.textContent = '';
+    const subir = botonChico(f.holter_estudio && f.holter_estado !== 'EN PAPELERA' ? 'Reemplazar (subir .zip o .cmszip)' : 'Subir estudio (.zip o .cmszip)',
+      f.holter_estudio ? '' : 'oscuro', function () { elegirArchivoEstudio(f); });
+    const buscar = botonChico(f.holter_estudio ? 'Elegir otro del censo' : 'Buscar en el censo de estudios', '', function () { elegirDelCenso(f, 'estudio'); });
+    if (!f.holter_estudio) {
+      agregar(caja, [
+        h('p', { class: 'tenue', style: 'margin:0 0 6px' }, 'Sin estudio. Los estudios (.zip de Norav o .cmszip de BTL) se buscan automáticamente cada hora en la carpeta de Drive, por expediente y nombre. También puede buscarlo en el censo o subirlo.'),
+        f.holter_info ? h('p', { class: 'tenue', style: 'margin:0 0 10px' }, f.holter_info) : null,
+        h('div', { class: 'acciones-rep' }, subir, buscar)]);
+      return;
+    }
+    const e = f.holter_estado, revisar = e === 'POR REVISAR', papelera = e === 'EN PAPELERA';
+    agregar(caja, [
+      h('div', { class: 'linea-rep' }, chipArchivo(f, 'estudio'), f.holter_equipo ? h('span', { class: 'chip azul' }, 'Equipo ' + textoEquipo(f.holter_equipo)) : null,
+        f.holter_info ? h('span', { class: 'tenue' }, f.holter_info) : null),
+      revisar ? h('div', { class: 'aviso alerta', style: 'margin-top:0' }, h('b', null, '¿Este estudio es de ' + f.nombre + '?'),
+        ' Exp. ' + (f.expediente || 's/d') + '. Revise el nombre del archivo en Drive antes de confirmar.') : null,
+      h('div', { class: 'acciones-rep' },
+        revisar ? botonChico('Sí, corresponde', 'primario', function (b) { accionArchivo(f, 'reporte.confirmar', b, 'Estudio confirmado.', 'estudio'); }) : null,
+        revisar ? botonChico('No corresponde', 'peligro', function (b) { accionArchivo(f, 'reporte.descartar', b, 'Se quitó el estudio propuesto; no se volverá a proponer.', 'estudio'); }) : null,
+        papelera ? null : h('a', { class: 'btn chico', href: f.holter_estudio, target: '_blank', rel: 'noopener', title: 'Se abre con la cuenta de Google que tiene acceso a la carpeta' }, 'Abrir en Drive'),
+        buscar, subir,
+        revisar || papelera ? null : botonChico('Quitar estudio', 'peligro', async function (b) {
+          if (await preguntar('¿Quitar el estudio?', 'La solicitud quedará sin estudio. Ese archivo no se le volverá a proponer automáticamente. El archivo no se borra de Drive.', 'Sí, quitar', 'Cancelar', 'peligro')) {
+            accionArchivo(f, 'reporte.descartar', b, 'Estudio quitado.', 'estudio');
+          }
+        }))]);
+  }
+
+  /** Busca en el censo (reportes o estudios Holter; los más parecidos al paciente primero) y permite elegir el correcto. */
+  function elegirDelCenso(f, tipo) {
+    tipo = tipo || 'reporte';
+    const T = TIPOS[tipo];
     abrirModal(function (cerrar) {
       const lista = h('div', { class: 'lista-censo' }, h('div', { class: 'vacio' }, 'Buscando en el censo…'));
       const vista = h('div', { class: 'vista-censo' });
       const err = cajaError();
-      const q = h('input', { type: 'search', id: 'censo-q', placeholder: 'Nombre o ID del paciente', autocomplete: 'off', 'data-foco': true });
+      const q = h('input', { type: 'search', id: 'censo-q', placeholder: 'Nombre o ' + (tipo === 'estudio' ? 'expediente' : 'ID del paciente'), autocomplete: 'off', 'data-foco': true });
       let pedido = 0;
       const marca = function (ok, texto) { return h('span', { class: 'chip ' + (ok ? 'ok' : 'gris') }, (ok ? '✓ ' : '✕ ') + texto); };
       const buscar = async function () {
         const n = ++pedido;
         err.textContent = '';
         try {
-          const r = await api('reportes.buscar', { id: f.id, q: q.value.trim() });
+          const r = await api('reportes.buscar', { id: f.id, q: q.value.trim(), tipo: tipo });
           if (n === pedido) pintarLista(r);
         } catch (e) { if (n === pedido) { lista.textContent = ''; mostrarError(err, e); } }
       };
@@ -1245,8 +1477,8 @@
         let mover = false, otra = null;
         for (;;) {
           try {
-            const r = await conBoton(btn, function () { return api('reporte.vincular', { id: f.id, archivo: x.archivo, mover: mover }); });
-            olvidarArchivo(f.id + '|reporte|');
+            const r = await conBoton(btn, function () { return api('reporte.vincular', { id: f.id, archivo: x.archivo, mover: mover, tipo: tipo }); });
+            if (tipo === 'reporte') olvidarArchivo(f.id + '|reporte|');
             aplicarFila(r);
             break;
           } catch (e) {
@@ -1254,7 +1486,7 @@
               const idOtra = e.datos && e.datos.solicitud;
               otra = S.filas.get(idOtra) || null;
               const quien = otra ? ' (' + otra.nombre + ', ' + otra.estudio + ' del ' + fechaCorta(otra.fecha) + ')' : '';
-              if (!(await preguntar('Ese reporte está en otra solicitud', 'Está vinculado a la solicitud ' + idOtra + quien + '. ¿Moverlo a esta solicitud? La otra quedará sin reporte.', 'Sí, moverlo aquí', 'Cancelar'))) return;
+              if (!(await preguntar('Ese ' + T.nombre + ' está en otra solicitud', 'Está vinculado a la solicitud ' + idOtra + quien + '. ¿Moverlo a esta solicitud? La otra quedará sin ' + T.nombre + '.', 'Sí, moverlo aquí', 'Cancelar'))) return;
               mover = true;
               continue;
             }
@@ -1262,38 +1494,43 @@
             return;
           }
         }
-        if (otra) { // la otra solicitud quedó sin reporte
-          Object.assign(otra, { reporte: '', reporte_estado: '', reporte_info: 'El reporte se movió a la solicitud ' + f.id + '.' });
-          olvidarArchivo(otra.id + '|reporte|');
+        if (otra) { // la otra solicitud quedó sin el archivo
+          otra[T.url] = ''; otra[T.estado] = ''; otra[T.info] = 'El ' + T.nombre + ' se movió a la solicitud ' + f.id + '.';
+          if (tipo === 'estudio') otra.holter_equipo = ''; else olvidarArchivo(otra.id + '|reporte|');
         }
         cerrar();
-        tostada('Reporte vinculado a ' + f.nombre + '.');
+        tostada(T.Nombre + ' vinculado a ' + f.nombre + '.');
         refrescarDetalle(f.id);
         pintar();
       };
       const pintarLista = function (r) {
         lista.textContent = '';
         if (!r.reportes.length) {
-          lista.appendChild(h('div', { class: 'vacio' }, q.value.trim() ? 'Ningún reporte del censo coincide con la búsqueda.' :
-            'Ningún reporte del censo coincide con el expediente, el nombre o la fecha de nacimiento. Busque por nombre o ID.'));
+          lista.appendChild(h('div', { class: 'vacio' }, q.value.trim() ? 'Nada del censo coincide con la búsqueda.' :
+            'Nada del censo coincide con el expediente o el nombre' + (tipo === 'reporte' ? ' o la fecha de nacimiento' : '') + '. Busque por nombre o ' + (tipo === 'estudio' ? 'expediente.' : 'ID.')));
         }
         r.reportes.forEach(function (x) {
           const actual = x.solicitud === f.id;
+          const detalle = tipo === 'estudio'
+            ? x.nombre_archivo + ' · ' + (x.equipo ? textoEquipo(x.equipo) + ' · ' : '') + (x.tamano ? String(x.tamano).replace('.', ',') + ' MB · ' : '') + 'subido el ' + fechaHora(x.fecha_hora)
+            : 'ID: ' + (x.id_paciente || '—') + ' · nacimiento: ' + (x.fnac || '—') + ' · estudio: ' + (fechaHora(x.fecha_hora) || '—');
           lista.appendChild(h('div', { class: 'item-censo' + (actual ? ' actual' : '') },
-            h('div', { class: 'crece' }, h('b', null, x.paciente || x.nombre_archivo),
-              h('div', { class: 'tenue' }, 'ID: ' + (x.id_paciente || '—') + ' · nacimiento: ' + (x.fnac || '—') + ' · estudio: ' + (fechaHora(x.fecha_hora) || '—')),
-              h('div', { class: 'chips' }, marca(x.coincide.expediente, 'Expediente'), marca(x.coincide.nombre, 'Nombre'), marca(x.coincide.fnac, 'Nacimiento'),
-                x.solicitud ? h('span', { class: 'chip ' + (actual ? 'azul' : 'alerta') }, actual ? 'Es el reporte actual' : 'En la solicitud ' + x.solicitud) : null)),
+            h('div', { class: 'crece' }, h('b', null, x.paciente || x.nombre_archivo), h('div', { class: 'tenue' }, detalle),
+              h('div', { class: 'chips' }, marca(x.coincide.expediente, 'Expediente'), marca(x.coincide.nombre, 'Nombre'),
+                tipo === 'reporte' ? marca(x.coincide.fnac, 'Nacimiento') : null,
+                x.papelera ? h('span', { class: 'chip gris' }, 'En la papelera') : null,
+                x.solicitud ? h('span', { class: 'chip ' + (actual ? 'azul' : 'alerta') }, actual ? 'Es el ' + T.nombre + ' actual' : 'En la solicitud ' + x.solicitud) : null)),
             h('div', { class: 'acciones-rep' },
-              h('button', { type: 'button', class: 'btn chico', onclick: function (ev) { ver(x, ev.currentTarget); } }, 'Ver'),
-              actual ? null : h('button', { type: 'button', class: 'btn chico primario', onclick: function (ev) { elegir(x, ev.currentTarget); } }, 'Elegir este'))));
+              tipo === 'reporte' ? h('button', { type: 'button', class: 'btn chico', onclick: function (ev) { ver(x, ev.currentTarget); } }, 'Ver')
+                : h('a', { class: 'btn chico', href: 'https://drive.google.com/file/d/' + x.archivo + '/view', target: '_blank', rel: 'noopener' }, 'Abrir en Drive'),
+              actual || x.papelera ? null : h('button', { type: 'button', class: 'btn chico primario', onclick: function (ev) { elegir(x, ev.currentTarget); } }, 'Elegir este'))));
         });
-        lista.appendChild(h('p', { class: 'tenue', style: 'margin:10px 0 0;font-size:13px' }, 'Reportes en el censo: ' + r.total_censo + '. Se muestran hasta 40, primero los que más coinciden y los más cercanos a la fecha de la cita.'));
+        lista.appendChild(h('p', { class: 'tenue', style: 'margin:10px 0 0;font-size:13px' }, r.fuente + ' en el censo: ' + r.total_censo + '. Se muestran hasta 40, primero los que más coinciden y los más cercanos a la fecha de la cita.'));
       };
       buscar();
       return h('div', { class: 'modal' },
         h('div', { class: 'modal-cab' },
-          h('div', { style: 'min-width:0' }, h('h2', null, 'Elegir reporte del censo'),
+          h('div', { style: 'min-width:0' }, h('h2', null, tipo === 'estudio' ? 'Elegir estudio Holter del censo' : 'Elegir reporte del censo'),
             h('div', { class: 'meta' }, h('span', null, f.nombre), h('span', null, '· Exp. ' + (f.expediente || 's/d')), h('span', null, '· Nac. ' + (f.fecha_nacimiento || 's/d')),
               h('span', null, '· Solicitud ' + fechaCorta(f.fecha) + (f.cita_fecha ? ' · cita ' + fechaCorta(f.cita_fecha) : '')))),
           h('button', { class: 'btn chico x', onclick: cerrar, 'aria-label': 'Cerrar' }, '✕ Cerrar')),
@@ -1301,6 +1538,70 @@
           h('div', { class: 'campo' }, h('label', { for: 'censo-q' }, 'Buscar (vacío = los que coinciden con el paciente)'), q), err, lista)));
     });
   }
+
+  /* ============================== enviar el reporte por WhatsApp ============================== */
+  function numeroWhatsApp(f) {
+    // Números de El Salvador: 8 dígitos (se antepone 503). De otros países: guardados con "+código".
+    const s = String(f.contacto || '');
+    return s.charAt(0) === '+' ? s.slice(1).replace(/\D/g, '') : /^\d{8}$/.test(s) ? '503' + s : '';
+  }
+  function mensajeReporte(f) {
+    return [NOMBRE_SERVICIO + ' – reporte de ' + f.estudio,
+      'Paciente: ' + f.nombre + ' (exp. ' + f.expediente + ')',
+      'Hospital: ' + f.hospital,
+      f.cita_fecha ? 'Estudio realizado el ' + fechaLarga(f.cita_fecha) : null,
+      '',
+      'Le enviamos el reporte en PDF.',
+      'Solicitud ' + f.id].filter(function (x) { return x !== null; }).join('\n');
+  }
+  function nombreArchivoReporte(f, tipo) {
+    const ext = /png/.test(tipo) ? 'png' : /jpe?g/.test(tipo) ? 'jpg' : 'pdf';
+    return 'Reporte ' + (esHolter(f) ? 'Holter' : f.estudio) + ' - ' + f.nombre.replace(/[\\/:*?"<>|]+/g, ' ') + ' - ' + f.id + '.' + ext;
+  }
+  /**
+   * WhatsApp no deja adjuntar un archivo desde un enlace: se descarga el PDF y se abre el chat del médico con el mensaje escrito;
+   * la persona adjunta el PDF y pulsa Enviar. En teléfonos se ofrece además "Compartir el PDF".
+   */
+  function enviarReporte(f0) {
+    const f = S.filas.get(f0.id) || f0;
+    const num = numeroWhatsApp(f);
+    abrirModal(function (cerrar) {
+      const pasos = h('div', null, h('div', { class: 'vacio' }, 'Cargando el reporte…'));
+      const err = cajaError();
+      obtenerArchivo(f.id, 'reporte').then(function (a) {
+        const nombre = nombreArchivoReporte(f, a.tipo);
+        const archivo = typeof File === 'function' ? new File([fetchBlob(a)], nombre, { type: a.tipo }) : null;
+        const compartir = archivo && navigator.canShare && navigator.canShare({ files: [archivo] }) && matchMedia('(pointer: coarse)').matches;
+        pasos.textContent = '';
+        agregar(pasos, [
+          h('ol', { class: 'pasos-wa' },
+            h('li', null, h('a', { class: 'btn', href: a.url, download: nombre }, 'Descargar el PDF'), h('div', { class: 'tenue' }, nombre)),
+            h('li', null, num ? h('a', { class: 'btn wa', href: 'https://wa.me/' + num + '?text=' + encodeURIComponent(mensajeReporte(f)), target: '_blank', rel: 'noopener' },
+              'Abrir el chat de ' + (f.medico || 'el médico')) : h('span', { class: 'aviso error' }, 'La solicitud no tiene un número de WhatsApp válido.'),
+            h('div', { class: 'tenue' }, (num ? telefono(f.contacto) + ' · ' : '') + 'en el chat, adjunte el PDF descargado (📎 → Documento) y pulse Enviar.')),
+            h('li', null, h('button', { type: 'button', class: 'btn primario', onclick: async function (ev) {
+              try {
+                const r = await conBoton(ev.currentTarget, function () { return api('reporte.notificar', { id: f.id }); });
+                aplicarFila(r);
+                cerrar();
+                tostada('Reporte marcado como notificado.');
+                refrescarDetalle(f.id);
+                pintar();
+              } catch (e) { mostrarError(err, e); }
+            } }, 'Ya lo envié: marcar como notificado'))),
+          compartir ? h('p', { class: 'tenue', style: 'margin:4px 0 0' }, 'En este teléfono también puede ',
+            h('button', { type: 'button', class: 'btn chico', onclick: function () { navigator.share({ files: [archivo], text: mensajeReporte(f) }).catch(function () { /* cancelado */ }); } }, 'compartir el PDF'),
+            ' y elegir WhatsApp (solo si el médico está en sus contactos).') : null]);
+      }).catch(function (e) { pasos.textContent = ''; mostrarError(err, e); });
+      return h('div', { class: 'modal chico' },
+        h('div', { class: 'modal-cab' }, h('div', { style: 'min-width:0' }, h('h2', null, 'Enviar reporte por WhatsApp'),
+          h('div', { class: 'meta' }, h('span', null, f.nombre + ' · ' + f.estudio))),
+          h('button', { class: 'btn chico x', onclick: cerrar, 'aria-label': 'Cerrar' }, '✕')),
+        h('div', { class: 'modal-cuerpo' }, h('div', { class: 'todo' }, pasos, err)));
+    });
+  }
+  /** El archivo descargado ya está en memoria como URL "blob:"; aquí se recupera el Blob para compartirlo. */
+  function fetchBlob(a) { return a.blob || new Blob([]); }
 
   /* ============================== comentario ============================== */
   function seccionComentario(f0) {
@@ -1376,11 +1677,15 @@
     const seccionReporte = h('section', { class: 'ficha todo', id: 'seccion-reporte' }, h('h3', null, 'Reporte del estudio'));
     const cajaReporte = h('div');
     seccionReporte.appendChild(cajaReporte);
+    const seccionEstudio = esHolter(f) ? h('section', { class: 'ficha todo', id: 'seccion-estudio' }, h('h3', null, 'Estudio Holter')) : null;
+    const cajaEstudio = h('div');
+    if (seccionEstudio) seccionEstudio.appendChild(cajaEstudio);
     const comentario = seccionComentario(f);
     pintarCita();
     pintarResultado();
     pintarReporte(cajaReporte, f);
-    S.detalleAbierto = { id: f.id, fn: function (x) { if (x) f = x; pintarCita(); pintarResultado(); pintarReporte(cajaReporte, f); } };
+    if (seccionEstudio) pintarEstudio(cajaEstudio, f);
+    S.detalleAbierto = { id: f.id, fn: function (x) { if (x) f = x; pintarCita(); pintarResultado(); pintarReporte(cajaReporte, f); if (seccionEstudio) pintarEstudio(cajaEstudio, f); } };
     const contacto = f.contacto ? [h('a', { href: 'tel:' + f.contacto }, telefono(f.contacto))] : '';
     abrirModal(function (cerrar) {
       return h('div', { class: 'modal' },
@@ -1395,7 +1700,8 @@
           h('section', { class: 'ficha' }, h('h3', null, 'Paciente'), h('dl', { class: 'datos' },
             dato('Expediente', f.expediente), dato('Fecha de nacimiento', f.fecha_nacimiento), dato('Edad', f.edad === '' ? '' : f.edad === '0' ? edadCorta(f).replace(' m', ' meses') : f.edad + ' años'),
             dato('Sexo', f.sexo), dato('Peso', f.peso ? f.peso + ' kg' : ''), dato('Talla', f.talla ? f.talla + ' cm' : ''),
-            dato('IMC', imc), dato('Superficie corporal', sc))),
+            dato('IMC', imc), dato('Superficie corporal', sc),
+            f.creatinina ? dato('Creatinina', f.creatinina + ' mg/dL') : null, f.hematocrito ? dato('Hematocrito', f.hematocrito + ' %') : null)),
           h('section', { class: 'ficha' }, h('h3', null, 'Procedencia'), h('dl', { class: 'datos' },
             h('div', { style: 'grid-column:1/-1' }, h('dt', null, 'Hospital'), h('dd', null, f.hospital || '—')),
             dato('Especialidad', f.especialidad), dato('Médico que solicita', f.medico), dato('Contacto', contacto))),
@@ -1408,6 +1714,7 @@
           botonesOtros(f),
           h('section', { class: 'ficha todo' }, h('h3', null, 'Cita'), seccionCita),
           h('section', { class: 'ficha todo' }, h('h3', null, 'Resultado'), resultado),
+          seccionEstudio,
           seccionReporte,
           comentario.seccion));
     }, { alCerrar: function () { S.detalleAbierto = null; },
@@ -1415,6 +1722,7 @@
         return !comentario.sinGuardar() || preguntar('Comentario sin guardar', 'Escribió un comentario que todavía no se ha guardado.', 'Cerrar sin guardar', 'Seguir editando', 'peligro');
       } });
     if (op && op.ir === 'reporte') seccionReporte.scrollIntoView({ block: 'start' });
+    if (op && op.ir === 'estudio' && seccionEstudio) seccionEstudio.scrollIntoView({ block: 'start' });
   }
 
   /* ============================== censo general ============================== */
@@ -1428,7 +1736,7 @@
     const filas = enRango.filter(function (f) {
       return (!u.estudio || f.estudio === u.estudio) && (!u.hosp || f.hospital === u.hosp) && (!u.prio || f.prioridad === u.prio) &&
         (!u.estado || (u.estado === 'NO_ACUDIO' ? f.motivo_no === NO_ACUDIO : f.estado === u.estado)) &&
-        (!u.reporte || (u.reporte === 'revisar' ? f.reporte_estado === 'POR REVISAR' : u.reporte === 'sin' ? !f.reporte : !!f.reporte && f.reporte_estado !== 'POR REVISAR'));
+        (!u.reporte || (u.reporte === 'revisar' ? f.reporte_estado === 'POR REVISAR' || f.holter_estado === 'POR REVISAR' : u.reporte === 'sin' ? !f.reporte : reporteListo(f)));
     });
     const visibles = aplicar(filas, u);
     const err = cajaError();
@@ -1485,7 +1793,9 @@
       ['diagnostico', 'Diagnósticos'], ['motivo', 'Motivo del estudio'], ['datos_clinicos', 'Datos clínicos relevantes'], ['medico', 'Médico solicitante'], ['contacto', 'Contacto'],
       ['cita_fecha', 'Fecha de cita'], ['cita_hora', 'Hora de cita'], ['cita_medico', 'Médico de la cita'], ['sobrecupo', 'Sobrecupo'], ['notificado', 'Notificado'],
       ['estado', 'Estado'], ['realizado_por', 'Realizado por'], ['motivo_no', 'Motivo de no realización'], ['fecha_cierre', 'Fecha de cierre'],
-      ['reporte_estado', 'Reporte'], ['comentario', 'Comentario'], ['comentario_por', 'Comentario guardado por'], ['origen', 'Origen']];
+      ['creatinina', 'Creatinina (mg/dL)'], ['hematocrito', 'Hematocrito (%)'],
+      ['reporte_estado', 'Reporte'], ['reporte_notificado', 'Reporte notificado'], ['holter_estado', 'Estudio Holter'], ['holter_equipo', 'Equipo Holter'],
+      ['comentario', 'Comentario'], ['comentario_por', 'Comentario guardado por'], ['origen', 'Origen']];
     const lineas = [cols.map(function (c) { return celdaCsv(c[1]); }).join(',')];
     filas.forEach(function (f) { lineas.push(cols.map(function (c) { return celdaCsv(f[c[0]]); }).join(',')); });
     descargar('censo_perifericos_' + S.hoy + '.csv', lineas.join('\r\n'));
@@ -1816,9 +2126,20 @@
       h('button', { class: 'btn oscuro', style: 'margin-top:12px', onclick: function () { editar(-1); } }, 'Nueva plantilla'));
   }
 
-  /* ---------- censo automático de reportes ---------- */
+  /** Espacio usado en la cuenta de Google del sistema (los estudios Holter pesan 100 a 200 MB cada uno). */
+  function espacioDrive(x) {
+    if (!x || !(x.limite > 0)) return null;
+    const gb = function (n) { return (n / 1073741824).toFixed(1).replace('.', ',') + ' GB'; };
+    const pct = Math.round(100 * x.usado / x.limite);
+    return h('div', { class: pct >= 80 ? 'aviso alerta' : 'tenue', style: 'margin-top:10px' },
+      'Espacio de Google usado por la cuenta del sistema: ' + gb(x.usado) + ' de ' + gb(x.limite) + ' (' + pct + ' %).',
+      pct >= 80 ? ' Vacíe la papelera de Drive o cambie BORRADO_DEFINITIVO a true en el servidor (guía, sección 13).' : '',
+      h('div', { class: 'progreso-barra', style: 'margin-top:6px;max-width:420px' }, h('span', { style: 'width:' + Math.min(100, pct) + '%' })));
+  }
+
+  /* ---------- censo automático de reportes y estudios ---------- */
   function panelReportes() {
-    const titulo = h('h3', null, 'Censo automático de reportes de ecocardiograma');
+    const titulo = h('h3', null, 'Censo automático de reportes y estudios');
     const e = S.estadoReportes;
     if (!e || e.cargando) {
       if (!e) {
@@ -1830,27 +2151,38 @@
     }
     if (e.error) return h('section', { class: 'panel' }, titulo, h('div', { class: 'aviso error' }, e.error));
     const ejecutar = async function (btn, completo) {
-      if (completo && !(await preguntar('¿Revisar toda la carpeta?', 'Se revisan todos los PDF de la carpeta de reportes, no solo los nuevos. Los que ya están en el censo no se duplican. Puede tardar unos minutos.', 'Sí, revisar todo', 'Cancelar'))) return;
+      if (completo && !(await preguntar('¿Revisar todas las carpetas?', 'Se revisan todos los archivos de las tres carpetas, no solo los nuevos. Los que ya están en el censo no se duplican. Puede tardar unos minutos.', 'Sí, revisar todo', 'Cancelar'))) return;
       try {
         const r = await conBoton(btn, function () { return api('reportes.ejecutar', { completo: !!completo }); });
         S.estadoReportes = r;
         const x = r.resultado;
-        tostada(plural(x.nuevos, 'reporte nuevo', 'reportes nuevos') + ' en el censo · ' + plural(x.automaticos, 'vinculado', 'vinculados') + ' · ' + x.revisar + ' por revisar');
+        tostada(plural(x.nuevos, 'archivo nuevo', 'archivos nuevos') + ' en el censo · ' + plural(x.automaticos, 'vinculado', 'vinculados') + ' · ' + x.revisar + ' por revisar' +
+          (x.papelera ? ' · ' + x.papelera + ' a la papelera' : '') + (x.errores && x.errores.length ? ' · ' + plural(x.errores.length, 'carpeta con error', 'carpetas con error') : ''), { error: !!(x.errores && x.errores.length) });
         await sincronizar(true);
       } catch (err) { tostada(err.message, { error: true }); }
       pintar();
     };
+    const fuentes = e.fuentes || [];
     return h('section', { class: 'panel' }, titulo,
-      h('p', { class: 'sub' }, 'Cada hora, de ' + e.horario + ', los PDF nuevos de la carpeta del ecógrafo se agregan a la pestaña "Reportes" de la hoja. Quince minutos después se buscan los reportes de las solicitudes de ecocardiograma sin reporte: si coinciden expediente, nombre y fecha de nacimiento se vinculan solos; si coinciden dos datos (siempre el nombre), quedan "por revisar".'),
+      h('p', { class: 'sub' }, 'Cada hora, de ' + e.horario + ', se censan tres carpetas de Drive: reportes de ecocardiograma, reportes de Holter (BTL y Norav) y estudios Holter (.zip y .cmszip). Quince minutos después se vinculan con las solicitudes que no los tienen. Reportes: si coinciden expediente, nombre y fecha de nacimiento se vinculan solos; con dos datos (siempre el nombre) quedan "por revisar". Estudios: expediente y nombre se vinculan solos; solo uno de los dos queda "por revisar".'),
       !e.drive_api ? h('div', { class: 'aviso error' }, 'Falta activar el servicio "Drive API" en el editor de Apps Script. Vea la guía de instalación, sección 12.') : null,
       e.drive_api && !e.activo ? h('div', { class: 'aviso alerta' }, 'La revisión automática no está activada. En el editor de Apps Script ejecute una vez la función "activarReportes" (guía de instalación, sección 12).') : null,
-      h('dl', { class: 'datos' }, dato('Revisión automática', e.activo ? 'Activa' : 'Inactiva'), dato('Solicitudes desde', fechaCorta(e.desde)),
-        dato('Último censo', e.ultimo_censo), dato('Última vinculación', e.ultima_vinculacion),
-        dato('Reportes en el censo', String(e.censados)), dato('Vinculados', String(e.vinculados)), dato('Por revisar', String(e.por_revisar))),
+      h('dl', { class: 'datos' }, dato('Revisión automática', e.activo ? 'Activa' : 'Inactiva'),
+        dato('Ecocardiogramas desde', fechaCorta(e.desde)), dato('Holter desde', fechaCorta(e.holter_desde)), dato('Última vinculación', e.ultima_vinculacion)),
+      h('div', { class: 'tabla-scroll', style: 'margin-top:12px' }, h('table', { class: 'cruce fuentes' },
+        h('thead', null, h('tr', null, ['Carpeta', 'En el censo', 'Vinculados', 'Por revisar', 'Último censo'].map(function (t) { return h('th', null, t); }))),
+        h('tbody', null, fuentes.map(function (f) {
+          return h('tr', null, h('td', null, h('a', { href: 'https://drive.google.com/drive/folders/' + f.carpeta, target: '_blank', rel: 'noopener' }, f.titulo),
+            f.error ? h('div', { class: 'error-fuente' }, f.error) : null),
+          h('td', null, String(f.censados)), h('td', null, String(f.vinculados)), h('td', null, String(f.por_revisar)), h('td', null, f.ultimo_censo || '—'));
+        })))),
+      e.papelera ? h('p', { class: 'tenue', style: 'margin:10px 0 0' }, 'Estudios Holter ' + (e.papelera.definitivo ? 'se borran de Drive ' : 'van a la papelera de Drive ') +
+        e.papelera.dias + ' días después de notificar el reporte. ' +
+        plural(e.papelera.en_espera, 'estudio notificado en espera', 'estudios notificados en espera') + '. Última revisión: ' + (e.papelera.ultima || 'aún no') + '.') : null,
+      espacioDrive(e.espacio),
       h('div', { class: 'acciones-rep', style: 'margin-top:14px' },
         h('button', { class: 'btn oscuro', disabled: !e.drive_api, onclick: function (ev) { ejecutar(ev.currentTarget, false); } }, 'Censar y vincular ahora'),
-        h('button', { class: 'btn', disabled: !e.drive_api, onclick: function (ev) { ejecutar(ev.currentTarget, true); } }, 'Revisar toda la carpeta'),
-        h('a', { class: 'btn', href: 'https://drive.google.com/drive/folders/' + e.carpeta, target: '_blank', rel: 'noopener' }, 'Abrir la carpeta de reportes')));
+        h('button', { class: 'btn', disabled: !e.drive_api, onclick: function (ev) { ejecutar(ev.currentTarget, true); } }, 'Revisar todas las carpetas')));
   }
   function restablecer(x) {
     modalChico('Nueva contraseña para ' + x.usuario, function (cerrar) {

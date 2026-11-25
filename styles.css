@@ -385,3 +385,30 @@ table.semana .corto { display: none; }
   .comentario select { max-width: none; flex: 1 1 100%; }
 }
 @media print { .marcar-caja { display: block; } }
+
+/* Versión 1.2: Holter, pestañas por estudio y envío de reportes */
+.marcar-caja { flex-wrap: wrap; }
+.btn-rep.papelera { color: var(--tinta-2); background: #eef1f4; }
+.pestana .n.sobre { background: var(--error-suave, #fde8e6); color: #a1261d; }
+.ayuda-tab { color: var(--tinta-2); font-size: 14px; margin: -4px 0 12px; max-width: 900px; }
+table.censo td.c-seg .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+table.censo td.c-seg { min-width: 180px; }
+.tenue.atraso { color: #a1261d; font-weight: 600; }
+.linea-rep.notif, .acciones-rep.notif { margin-top: 10px; }
+.progreso-barra { height: 14px; border-radius: 99px; background: #e6ebf0; overflow: hidden; }
+.progreso-barra > span { display: block; height: 100%; width: 0; background: var(--marca); transition: width .3s; }
+.pasos-wa { margin: 0; padding-left: 22px; display: grid; gap: 14px; }
+.pasos-wa li .tenue { font-size: 13px; margin-top: 4px; }
+.error-fuente { color: #a1261d; font-size: 12.5px; margin-top: 4px; max-width: 420px; }
+table.fuentes td { font-size: 14px; }
+.solo-imprimir { display: none; }
+@media print { .solo-imprimir { display: block; font-weight: 600; } }
+@media (max-width: 800px) {
+  table.censo td.c-seg { min-width: 0; }
+  .pestanas-estudio .pestana { padding: 10px 10px; }
+}
+.pestana .corto { display: none; }
+@media (max-width: 800px) {
+  .pestana .largo { display: none; }
+  .pestana .corto { display: inline; }
+}
