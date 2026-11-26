@@ -1,6 +1,6 @@
 // Service worker: guarda la "cáscara" de la app para que abra aunque la conexión falle.
 // Nunca guarda el censo ni datos de pacientes: solo los archivos de la propia app.
-const CACHE = 'cardio-perifericos-censos-v3';
+const CACHE = 'cardio-perifericos-censos-v4';
 const ARCHIVOS = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', (e) => {

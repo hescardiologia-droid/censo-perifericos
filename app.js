@@ -12,9 +12,10 @@
   const NOMBRE_SERVICIO = CFG.NOMBRE_SERVICIO || 'Servicio de Cardiología';
 
   // Deben coincidir con la API (sirven para ordenar listas y filtros).
-  const ESTUDIOS = ['Ecocardiograma', 'Ecocardiograma transesofágico', 'Monitoreo Holter', 'Prueba de esfuerzo', 'Resonancia magnética cardiaca'];
+  const TRASPLANTE = 'Evaluación preoperatoria para trasplante renal';
+  const ESTUDIOS = ['Ecocardiograma', 'Ecocardiograma transesofágico', 'Monitoreo Holter', 'Prueba de esfuerzo', 'Resonancia magnética cardiaca', TRASPLANTE];
   const CORTO = { 'Ecocardiograma': 'Eco', 'Ecocardiograma transesofágico': 'ETE', 'Monitoreo Holter': 'Holter', 'Prueba de esfuerzo': 'P. esfuerzo',
-    'Resonancia magnética cardiaca': 'RM' };
+    'Resonancia magnética cardiaca': 'RM', 'Evaluación preoperatoria para trasplante renal': 'Pretrasplante' };
   const HOLTER = 'Monitoreo Holter';
   const DIAS_PAPELERA = 15; // el estudio Holter va a la papelera de Drive 15 días después de notificar (lo hace el servidor)
   const PRIORIDADES = ['Urgencia', 'A demanda'];
@@ -642,7 +643,8 @@
     prioridad: { t: 'Prioridad', orden: 'prioridad', celda: chipPrioridad },
     paciente: { t: 'Paciente', orden: 'nombre', clase: 'c-pac pac', celda: function (f) {
       return [h('b', null, f.nombre), h('span', { class: 'tenue' }, 'Exp. ' + (f.expediente || 's/d') + ' · ' + f.id),
-        S.repetidas.has(f.id) ? h('span', { class: 'chip rep', style: 'margin-left:6px', title: 'Mismo paciente, hospital y estudio solicitados con menos de 15 días de diferencia' }, 'Posible repetida') : null];
+        S.repetidas.has(f.id) ? h('span', { class: 'chip rep', style: 'margin-left:6px', title: 'Mismo paciente, hospital y estudio solicitados con menos de 15 días de diferencia' }, 'Posible repetida') : null,
+        chipVinculada(f)];
     } },
     edad: { t: 'Edad · sexo', orden: 'edad', clase: 'nowrap', e: 'Edad', celda: function (f) { return edadCorta(f) + (f.sexo ? ' · ' + f.sexo.charAt(0) : ''); } },
     hospital: { t: 'Hospital · especialidad', orden: 'hospital', clase: 'c-hosp', celda: function (f) {
@@ -1153,6 +1155,25 @@
       }).catch(function (e) { lienzo.textContent = 'No se pudo cargar: ' + e.message; });
     }
     return h('div', { class: 'archivo' }, h('div', { class: 'tit' }, titulo, acciones), lienzo);
+  }
+  /* ---------- evaluación para trasplante renal y su ecocardiograma ---------- */
+  /** En la evaluación: cómo va el eco previo. En el eco: para qué es. */
+  function chipVinculada(f) {
+    if (!f.vinculada) return null;
+    if (f.estudio === TRASPLANTE) {
+      const e = S.filas.get(f.vinculada);
+      const como = !e ? f.vinculada : e.estado === 'REALIZADO' ? 'realizado' : e.estado === 'NO REALIZADO' ? 'no realizado' : e.cita_fecha ? 'cita ' + fechaCorta(e.cita_fecha).slice(0, 5) : 'sin cita';
+      return h('span', { class: 'chip ' + (e && e.estado === 'REALIZADO' ? 'ok' : 'azul'), style: 'margin-left:6px', title: 'Ecocardiograma previo: solicitud ' + f.vinculada }, 'Eco previo: ' + como);
+    }
+    return h('span', { class: 'chip azul', style: 'margin-left:6px', title: 'Generada con la evaluación para trasplante renal ' + f.vinculada }, 'Para pretrasplante');
+  }
+  function enlaceVinculada(f, cerrar) {
+    if (!f.vinculada) return null;
+    const otra = S.filas.get(f.vinculada);
+    const texto = f.estudio === TRASPLANTE ? 'Eco previo: ' + f.vinculada : 'Eco para la evaluación de trasplante renal ' + f.vinculada;
+    if (!otra) return h('span', { class: 'chip azul' }, texto);
+    return h('button', { type: 'button', class: 'chip azul enlace', title: 'Abrir la solicitud vinculada',
+      onclick: function () { cerrar(); setTimeout(function () { abrirDetalle(S.filas.get(otra.id) || otra); }, 0); } }, texto + ' ›');
   }
   function botonesOtros(f) {
     const n = Number(f.otros || 0);
@@ -1694,7 +1715,8 @@
             h('div', { class: 'meta' }, chipPrioridad(f), h('span', null, f.estudio), h('span', null, '·'), h('span', null, 'Solicitud ' + f.id),
               h('span', null, '·'), h('span', null, fechaHora(f.fecha_hora)),
               f.origen === 'HISTÓRICO' ? h('span', { class: 'chip gris' }, 'Hoja anterior') : null,
-              S.repetidas.has(f.id) ? h('span', { class: 'chip rep' }, 'Posible repetida') : null)),
+              S.repetidas.has(f.id) ? h('span', { class: 'chip rep' }, 'Posible repetida') : null,
+              enlaceVinculada(f, cerrar))),
           h('button', { class: 'btn chico x', onclick: cerrar, 'aria-label': 'Cerrar' }, '✕ Cerrar')),
         h('div', { class: 'modal-cuerpo' },
           h('section', { class: 'ficha' }, h('h3', null, 'Paciente'), h('dl', { class: 'datos' },
@@ -1711,7 +1733,9 @@
             h('p', { class: 'texto-largo' }, h('b', null, 'Datos clínicos relevantes'), f.datos_clinicos || '—'),
             f.notas ? h('p', { class: 'texto-largo' }, h('b', null, 'Otros datos (hoja anterior)'), f.notas) : null),
           h('section', { class: 'todo archivos' }, panelArchivo(f, 'ekg', 'Electrocardiograma'), panelArchivo(f, 'rx', 'Rayos X de tórax')),
-          botonesOtros(f),
+          // Trasplante renal (y su eco): exámenes de laboratorio y, si se enviaron, otros estudios pertinentes.
+          f.laboratorio ? h('section', { class: 'todo archivos' }, panelArchivo(f, 'laboratorio', 'Exámenes de laboratorio'),
+            f.otros ? panelArchivo(f, 'otros', 'Otros estudios pertinentes', 0) : null) : botonesOtros(f),
           h('section', { class: 'ficha todo' }, h('h3', null, 'Cita'), seccionCita),
           h('section', { class: 'ficha todo' }, h('h3', null, 'Resultado'), resultado),
           seccionEstudio,
@@ -1795,7 +1819,7 @@
       ['estado', 'Estado'], ['realizado_por', 'Realizado por'], ['motivo_no', 'Motivo de no realización'], ['fecha_cierre', 'Fecha de cierre'],
       ['creatinina', 'Creatinina (mg/dL)'], ['hematocrito', 'Hematocrito (%)'],
       ['reporte_estado', 'Reporte'], ['reporte_notificado', 'Reporte notificado'], ['holter_estado', 'Estudio Holter'], ['holter_equipo', 'Equipo Holter'],
-      ['comentario', 'Comentario'], ['comentario_por', 'Comentario guardado por'], ['origen', 'Origen']];
+      ['comentario', 'Comentario'], ['comentario_por', 'Comentario guardado por'], ['vinculada', 'Solicitud vinculada'], ['origen', 'Origen']];
     const lineas = [cols.map(function (c) { return celdaCsv(c[1]); }).join(',')];
     filas.forEach(function (f) { lineas.push(cols.map(function (c) { return celdaCsv(f[c[0]]); }).join(',')); });
     descargar('censo_perifericos_' + S.hoy + '.csv', lineas.join('\r\n'));
